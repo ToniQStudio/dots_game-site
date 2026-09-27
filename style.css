@@ -178,6 +178,7 @@ kbd {
 }
 #board:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
 #board.is-locked { cursor: not-allowed; }
+#board.is-thinking { cursor: grab; }
 
 /* ------------------------------------------------------------------ hud --- */
 

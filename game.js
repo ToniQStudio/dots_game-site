@@ -805,9 +805,12 @@
 		els.you2.textContent = 'соперник';
 
 		els.undoBtn.disabled = !ui.history.length || ui.thinking;
+		els.cancelBtn.hidden = !bot;
+		els.cancelBtn.disabled = !ui.history.length || ui.state.moveCount === 0;
 		els.finishBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
 		els.resignBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
-		els.canvas.classList.toggle('is-locked', isLocked());
+		els.canvas.classList.toggle('is-locked', ui.ended);
+		els.canvas.classList.toggle('is-thinking', ui.thinking);
 		updateZoomLabel();
 		updateTimerLabel();
 		applyPanelVisibility();
@@ -897,7 +900,16 @@
 			});
 			return;
 		}
-		finishBotMove(E.bestMove(ui.state, 2, options));
+		/* no worker available: search briefly so the page does not freeze long */
+		var fallback = {
+			timeBudget: Math.min(options.timeBudget, 1500),
+			maxDepth: options.maxDepth,
+			maxMoves: options.maxMoves,
+			rootLimit: options.rootLimit,
+			tacticalScan: options.tacticalScan,
+			captureScan: options.captureScan
+		};
+		finishBotMove(E.bestMove(ui.state, 2, fallback));
 	}
 
 	function scheduleBot() {
@@ -937,6 +949,25 @@
 			while (ui.state.turn !== 1 && ui.history.length) restore(ui.history.pop());
 		}
 		ui.ended = false;
+		ui.hover = null;
+		render();
+		updatePanel();
+	}
+
+	/* Stop a pending computer move and take back your own last move. */
+	function cancelMyMove() {
+		if (!ui.history.length || ui.state.moveCount === 0) return;
+		ui.botRequestId += 1;
+		if (ui.botWorker) {
+			try { ui.botWorker.terminate(); } catch (err) {}
+			ui.botWorker = null;
+		}
+		ui.thinking = false;
+		ui.ended = false;
+		restore(ui.history.pop());
+		if (ui.mode === 'bot') {
+			while (ui.state.turn !== 1 && ui.history.length) restore(ui.history.pop());
+		}
 		ui.hover = null;
 		render();
 		updatePanel();
@@ -1271,6 +1302,7 @@
 
 		els.newBtn.addEventListener('click', requestNewGame);
 		els.undoBtn.addEventListener('click', undo);
+		els.cancelBtn.addEventListener('click', cancelMyMove);
 		els.finishBtn.addEventListener('click', function () {
 			if (ui.ended || ui.state.moveCount === 0) return;
 			showResult(null, 'manual');
@@ -1415,6 +1447,7 @@
 		els.you1 = $('you1');
 		els.you2 = $('you2');
 		els.undoBtn = $('undoBtn');
+		els.cancelBtn = $('cancelBtn');
 		els.newBtn = $('newBtn');
 		els.finishBtn = $('finishBtn');
 		els.resignBtn = $('resignBtn');
