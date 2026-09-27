@@ -1126,7 +1126,7 @@
 			els.turnText.textContent = 'Партия завершена';
 		} else if (ui.thinking) {
 			els.turn.classList.add('is-thinking');
-			els.turnText.textContent = 'Компьютер думает';
+			els.turnText.textContent = NAMES[s.turn] + ' думают';
 		} else {
 			els.turn.classList.remove('is-thinking');
 			els.turnText.textContent = 'Ход: ' + NAMES[s.turn];
