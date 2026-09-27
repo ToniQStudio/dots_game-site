@@ -118,6 +118,7 @@
 			grid: v('--grid'),
 			gridBold: v('--grid-bold'),
 			p1: v('--p1'), p2: v('--p2'),
+			p1Captured: v('--p1-captured'), p2Captured: v('--p2-captured'),
 			accent: v('--focus'), danger: v('--danger')
 		};
 	}
@@ -368,6 +369,12 @@
 	 * straight segments. That is the corner "shortcut": without the check the
 	 * contour would fill the right angle with an extra diagonal instead of
 	 * running through the corner dot.
+	 *
+	 * Two guarantees are layered on top. A segment that merely lies across a
+	 * still free dot is rerouted through it, so the contour carries as many
+	 * dots as possible; and the closing pass never leaves an end hanging — it
+	 * will even take a corner-cutting segment as a last resort, because a
+	 * finished loop is always better than a dead-end stub.
 	 */
 	function extendOutline(state, owner, touch, edges) {
 		var cands = outlineCandidates(state, owner, touch);
@@ -417,14 +424,208 @@
 		neighbors.forEach(function (_, k) { order.push(k); });
 		order.sort(function (a, b) { return neighbors.get(a).length - neighbors.get(b).length; });
 
-		function tryAdd(from, to) {
-			if ((deg.get(from) || 0) >= limit(from)) return;
-			if ((deg.get(to) || 0) >= limit(to)) return;
+		/*
+		 * Guard against "empty" enclosures. A segment whose ends are already
+		 * joined by a path closes a loop; if that loop holds no dot at all it
+		 * would show as a locked pocket with nothing inside (a bare triangle
+		 * between three dots). Such a segment is simply not drawn, so the
+		 * outline stays open instead of boxing in an empty sliver.
+		 */
+		function connected(a, b) {
+			if (a === b) return true;
+			var seen = new Set([a]);
+			var stack = [a];
+			while (stack.length) {
+				var cur = stack.pop();
+				var nb = adj.get(cur);
+				if (!nb) continue;
+				var hit = false;
+				nb.forEach(function (n) {
+					if (n === b) hit = true;
+					else if (!seen.has(n)) { seen.add(n); stack.push(n); }
+				});
+				if (hit) return true;
+			}
+			return false;
+		}
+
+		function neighborList(k) {
+			var nb = adj.get(k);
+			if (!nb || !nb.size) return [];
+			var p = E.parseKey(k);
+			var arr = [];
+			nb.forEach(function (n) { arr.push(n); });
+			arr.sort(function (x, y) {
+				var qx = E.parseKey(x), qy = E.parseKey(y);
+				return Math.atan2(qx[1] - p[1], qx[0] - p[0]) -
+					Math.atan2(qy[1] - p[1], qy[0] - p[0]);
+			});
+			return arr;
+		}
+
+		/*
+		 * Neighbour of `cur` reached by turning clockwise from the direction
+		 * cur->target. `target` need not be an actual neighbour (the edge being
+		 * tested is still virtual), only a direction.
+		 */
+		function clockwiseNext(cur, target) {
+			var arr = neighborList(cur);
+			if (!arr.length) return null;
+			var pc = E.parseKey(cur), pt = E.parseKey(target);
+			var ta = Math.atan2(pt[1] - pc[1], pt[0] - pc[0]);
+			var best = null, bestDelta = Infinity;
+			for (var i = 0; i < arr.length; i++) {
+				var pn = E.parseKey(arr[i]);
+				var na = Math.atan2(pn[1] - pc[1], pn[0] - pc[0]);
+				var d = ta - na;
+				if (d <= 1e-9) d += Math.PI * 2;
+				if (d < bestDelta) { bestDelta = d; best = arr[i]; }
+			}
+			return best;
+		}
+
+		/* Walk the face bordering directed edge a->b; returns its node cycle. */
+		function traceFace(a, b) {
+			var prev = a, cur = b, nodes = [a, b], guard = 0;
+			while (guard++ < 20000) {
+				var nxt = clockwiseNext(cur, prev);
+				if (nxt === null) return null;
+				nodes.push(nxt);
+				if (nxt === a) return nodes;
+				prev = cur; cur = nxt;
+			}
+			return null;
+		}
+
+		function polygonArea(nodes) {
+			var area = 0;
+			for (var i = 0; i < nodes.length; i++) {
+				var p = E.parseKey(nodes[i]);
+				var q = E.parseKey(nodes[(i + 1) % nodes.length]);
+				area += p[0] * q[1] - q[0] * p[1];
+			}
+			return area / 2;
+		}
+
+		function polygonHasDot(nodes) {
+			if (nodes.length < 4) return false;
+			var on = new Set(nodes);
+			var pts = [];
+			var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+			for (var i = 0; i < nodes.length; i++) {
+				var pt = E.parseKey(nodes[i]);
+				pts.push(pt);
+				if (pt[0] < minX) minX = pt[0];
+				if (pt[0] > maxX) maxX = pt[0];
+				if (pt[1] < minY) minY = pt[1];
+				if (pt[1] > maxY) maxY = pt[1];
+			}
+			var found = false;
+			state.dots.forEach(function (v, k) {
+				if (found || on.has(k)) return;
+				var p = E.parseKey(k);
+				if (p[0] < minX || p[0] > maxX || p[1] < minY || p[1] > maxY) return;
+				var inside = false;
+				for (var a = 0, b = pts.length - 1; a < pts.length; b = a++) {
+					var xi = pts[a][0], yi = pts[a][1], xj = pts[b][0], yj = pts[b][1];
+					if (((yi > p[1]) !== (yj > p[1])) &&
+						(p[0] < (xj - xi) * (p[1] - yi) / (yj - yi) + xi)) inside = !inside;
+				}
+				if (inside) found = true;
+			});
+			return found;
+		}
+
+		/* True when segment a-b would close a bounded loop with no dot in it. */
+		function makesEmptyPocket(a, b) {
+			if (!connected(a, b)) return false;
+			var f1 = traceFace(a, b);
+			if (f1 && polygonArea(f1) > 0 && !polygonHasDot(f1)) return true;
+			var f2 = traceFace(b, a);
+			if (f2 && polygonArea(f2) > 0 && !polygonHasDot(f2)) return true;
+			return false;
+		}
+
+		var addedKeys = new Set();
+		function addEdgeRaw(from, to) {
 			var ek = edgeKey(from, to);
-			if (used.has(ek)) return;
-			used.add(ek); bump(from); bump(to); link(from, to);
+			if (used.has(ek)) return false;
+			if (makesEmptyPocket(from, to)) return false;
+			used.add(ek); bump(from); bump(to); link(from, to); addedKeys.add(ek);
 			var p1 = E.parseKey(from), p2 = E.parseKey(to);
 			edges.push({ ax: p1[0], ay: p1[1], bx: p2[0], by: p2[1], owner: owner });
+			return true;
+		}
+		function tryAdd(from, to) {
+			if ((deg.get(from) || 0) >= limit(from)) return false;
+			if ((deg.get(to) || 0) >= limit(to)) return false;
+			return addEdgeRaw(from, to);
+		}
+		function removeEdge(from, to) {
+			var ek = edgeKey(from, to);
+			if (!used.has(ek)) return false;
+			used.delete(ek); addedKeys.delete(ek);
+			var na = adj.get(from); if (na) na.delete(to);
+			var nb = adj.get(to); if (nb) nb.delete(from);
+			deg.set(from, Math.max(0, (deg.get(from) || 1) - 1));
+			deg.set(to, Math.max(0, (deg.get(to) || 1) - 1));
+			var p1 = E.parseKey(from), p2 = E.parseKey(to);
+			for (var k = edges.length - 1; k >= 0; k--) {
+				var e = edges[k];
+				if (e.owner !== owner) continue;
+				if ((e.ax === p1[0] && e.ay === p1[1] && e.bx === p2[0] && e.by === p2[1]) ||
+					(e.ax === p2[0] && e.ay === p2[1] && e.bx === p1[0] && e.by === p1[1])) {
+					edges.splice(k, 1);
+					break;
+				}
+			}
+			return true;
+		}
+
+		/*
+		 * Include as many dots as possible. When a drawn segment `a—b` lies
+		 * across a free owner dot `m` (m is adjacent to both ends and both
+		 * `a—m` and `m—b` are border candidates), replace `a—b` by the two
+		 * segments through `m`. The dot `m` joins the outline and nothing is
+		 * left dangling, because `a` and `b` keep their degree and `m` gets
+		 * exactly two segments. Only segments drawn in this capture are moved,
+		 * so already finished contours are never touched.
+		 */
+		function maximizeStep() {
+			var list = [];
+			addedKeys.forEach(function (ek) { list.push(ek); });
+			for (var i = 0; i < list.length; i++) {
+				var ek = list[i];
+				if (!used.has(ek)) continue;
+				var bar = ek.indexOf('|');
+				var a = ek.slice(0, bar), b = ek.slice(bar + 1);
+				var pa = E.parseKey(a), pb = E.parseKey(b);
+				var found = null;
+				for (var dx = -1; dx <= 1 && !found; dx++) {
+					for (var dy = -1; dy <= 1; dy++) {
+						if (!dx && !dy) continue;
+						var m = E.key(pa[0] + dx, pa[1] + dy);
+						if (m === a || m === b) continue;
+						if (!ownerDots.has(m)) continue;
+						if ((deg.get(m) || 0) !== 0) continue;
+						var mp = E.parseKey(m);
+						if (Math.abs(mp[0] - pb[0]) > 1 || Math.abs(mp[1] - pb[1]) > 1) continue;
+						if (mp[0] === pb[0] && mp[1] === pb[1]) continue;
+						var am = edgeKey(a, m), mb = edgeKey(m, b);
+						if (!candSeen.has(am) || !candSeen.has(mb)) continue;
+						if (used.has(am) || used.has(mb)) continue;
+						found = m; break;
+					}
+				}
+				if (found && (makesEmptyPocket(a, found) || makesEmptyPocket(found, b))) found = null;
+				if (found) {
+					removeEdge(a, b);
+					addEdgeRaw(a, found);
+					addEdgeRaw(found, b);
+					return true;
+				}
+			}
+			return false;
 		}
 
 		function ordered(from, orthoOnly) {
@@ -455,17 +656,49 @@
 		}
 
 		/*
-		 * Finally close every open end. A dot left with a single segment would
-		 * be a line sticking out into nothing, so it is linked to an adjacent
-		 * dot of the same owner — a border candidate when possible, otherwise
-		 * any neighbour, even past the usual cap (which can make a four-way
-		 * junction). This is what keeps every contour a closed loop.
+		 * Close every open end. A dot with a single segment would be a line
+		 * sticking out into nothing, so it is linked to an adjacent dot of the
+		 * same owner — a border candidate when possible, otherwise any
+		 * neighbour, even past the usual cap (which can make a four-way
+		 * junction). When the only closing segment would cut a corner, the
+		 * shortcut drawn in this very capture is dropped and the loose end is
+		 * joined to the dot beyond it instead, so no dot is left dangling.
 		 */
+		function rewireEnd(end, pe) {
+			for (var ddx = -1; ddx <= 1; ddx++) {
+				for (var ddy = -1; ddy <= 1; ddy++) {
+					if (!ddx && !ddy) continue;
+					var to = E.key(pe[0] + ddx, pe[1] + ddy);
+					if (!ownerDots.has(to)) continue;
+					if (used.has(edgeKey(end, to))) continue;
+					var na = adj.get(end);
+					if (!na) continue;
+					var mid = null;
+					na.forEach(function (m) {
+						if (mid || m === to) return;
+						var nm = adj.get(m);
+						if (!nm || !nm.has(to)) return;
+						if ((deg.get(m) || 0) < 3) return;          /* it must stay a corner */
+						if (!addedKeys.has(edgeKey(m, to))) return; /* only this capture's segment */
+						mid = m;
+					});
+					if (!mid) continue;
+					if (makesEmptyPocket(end, to)) continue;
+					removeEdge(mid, to);
+					return addEdgeRaw(end, to);
+				}
+			}
+			return false;
+		}
+
 		var guard = 0, progress = true;
 		while (progress && guard++ < 4000) {
 			progress = false;
-			for (var q = 0; q < order.length; q++) {
-				var end = order[q];
+			if (maximizeStep()) progress = true;
+			var verts = [];
+			adj.forEach(function (_, k) { verts.push(k); });
+			for (var q = 0; q < verts.length; q++) {
+				var end = verts[q];
 				if ((deg.get(end) || 0) !== 1) continue;
 				var pe = E.parseKey(end);
 				var best = null, bestRank = 99;
@@ -476,22 +709,53 @@
 						if (!ownerDots.has(nk)) continue;
 						var ekc = edgeKey(end, nk);
 						if (used.has(ekc)) continue;
-						if (cutsCorner(end, nk, adj)) continue;
+						if (makesEmptyPocket(end, nk)) continue;
+						/*
+						 * A corner-cutting segment is allowed here as a last
+						 * resort: a dangling stub is worse than a small closing
+						 * triangle. The rank penalty keeps it behind every
+						 * clean closing edge, so routing through a free dot or
+						 * a non-cutting segment is always preferred.
+						 */
+						var cutC = cutsCorner(end, nk, adj);
 						var cd = deg.get(nk) || 0;
-						if (cd >= 4) continue;
 						var isCand = candSeen.has(ekc);
 						var ortho = (ddx === 0 || ddy === 0);
 						var rank = (cd === 1 ? 0 : (cd === 2 ? 1 : (cd === 3 ? 2 : 4))) +
-							(ortho ? 0 : 0.5) + (isCand ? 0 : 1.5);
+							(ortho ? 0 : 0.5) + (isCand ? 0 : 1.5) + (cutC ? 3 : 0);
 						if (rank < bestRank) { bestRank = rank; best = nk; }
 					}
 				}
-				if (best === null) continue;
-				var be = edgeKey(end, best);
-				used.add(be); bump(end); bump(best); link(end, best);
-				var ep1 = E.parseKey(end), ep2 = E.parseKey(best);
-				edges.push({ ax: ep1[0], ay: ep1[1], bx: ep2[0], by: ep2[1], owner: owner });
-				progress = true;
+				if (best !== null) {
+					addEdgeRaw(end, best);
+					progress = true;
+					continue;
+				}
+				if (rewireEnd(end, pe)) progress = true;
+			}
+		}
+
+		/*
+		 * Safety net for the rare case of a lone two-dot stub whose ends have
+		 * no other owner neighbour to close onto: drop it (only segments made
+		 * in this capture) so the board is never left with a dangling end.
+		 */
+		var pruned = true;
+		while (pruned) {
+			pruned = false;
+			var singles = [];
+			adj.forEach(function (_, k) { if ((deg.get(k) || 0) === 1) singles.push(k); });
+			for (var s = 0; s < singles.length; s++) {
+				var stub = singles[s];
+				var nb = adj.get(stub);
+				if (!nb || nb.size !== 1) continue;
+				var other = null;
+				nb.forEach(function (p) { other = p; });
+				if (other !== null && addedKeys.has(edgeKey(stub, other))) {
+					removeEdge(stub, other);
+					pruned = true;
+					break;
+				}
 			}
 		}
 	}
@@ -571,7 +835,7 @@
 		ctx.lineWidth = Math.max(1.05, sc * 0.077);
 		for (var i = 0; i < ui.scene.edges.length; i++) {
 			var e = ui.scene.edges[i];
-			ctx.strokeStyle = e.owner === 1 ? pal.p1 : pal.p2;
+			ctx.strokeStyle = e.owner === 1 ? pal.p1Captured : pal.p2Captured;
 			ctx.beginPath();
 			ctx.moveTo(sx(e.ax), sy(e.ay));
 			ctx.lineTo(sx(e.bx), sy(e.by));
@@ -588,16 +852,14 @@
 				ctx.fillStyle = v === 1 ? pal.p1 : pal.p2;
 			} else {
 				/*
-				 * A prisoner takes the colour of the side that captured it, so
-				 * a fortress and every dot inside it share one colour even when
-				 * a previously enclosed area has been enclosed again.
+				 * A prisoner takes the captured colour of the side that caught
+				 * it, so a fortress and every dot inside it share one muted
+				 * colour even when a previously enclosed area is enclosed again.
 				 */
 				var own = E.ownerOf(v);
-				ctx.fillStyle = own === 1 ? pal.p2 : pal.p1;
-				ctx.globalAlpha = 0.5;
+				ctx.fillStyle = own === 1 ? pal.p2Captured : pal.p1Captured;
 			}
 			ctx.beginPath(); ctx.arc(px, py, sc * 0.15, 0, TAU); ctx.fill();
-			ctx.globalAlpha = 1;
 		});
 
 		/* last move — deliberately faint */
@@ -835,7 +1097,7 @@
 		els.startBtn.hidden = inProgress;
 		els.undoBtn.hidden = !started;
 		els.finishBtn.hidden = !started;
-		els.undoBtn.disabled = !ui.history.length || ui.thinking;
+		els.undoBtn.disabled = false;
 		els.finishBtn.disabled = false;
 		els.canvas.classList.toggle('is-locked', ui.ended || !ui.started);
 		els.canvas.classList.toggle('is-thinking', ui.thinking);
@@ -1119,7 +1381,13 @@
 	}
 
 	function undo() {
-		if (ui.thinking || !ui.history.length) return;
+		if (!ui.history.length) return;
+		/* The button is always live: undo may interrupt the computer's turn. */
+		if (ui.thinking) {
+			ui.thinking = false;
+			ui.botPending = null;
+			ui.botRequestId += 1; /* ignore any reply that is already on its way */
+		}
 		restore(ui.history.pop());
 		if (ui.mode === 'bot') {
 			while (ui.state.turn !== 1 && ui.history.length) restore(ui.history.pop());
@@ -1235,7 +1503,6 @@
 	function togglePanel() {
 		ui.panelHidden = !ui.panelHidden;
 		applyPanelUI();
-		saveSetting('dots:panelHidden', ui.panelHidden ? '1' : '0');
 		clampCamera();
 		render();
 	}
@@ -1658,7 +1925,8 @@
 			}
 			if (found >= 0) ui.timeIndex = found; else ui.timeLimit = 0;
 		}
-		ui.panelHidden = loadSetting('dots:panelHidden', '0') === '1';
+		/* The side panel always starts open on a fresh page load. */
+		ui.panelHidden = false;
 		applyPanelUI();
 		applySettingsUI();
 		newGame();

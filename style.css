@@ -41,6 +41,10 @@
 	--p2: #E5484D;
 	--p2-soft: #FDEBEC;
 
+	/* captured (enclosed) dots and fortress outlines */
+	--p1-captured: #3A4B6F;
+	--p2-captured: #762E30;
+
 	/* board */
 	--grid: #E1DED3;
 	--grid-bold: #CFCBBE;
@@ -176,7 +180,9 @@ kbd {
 	touch-action: none;
 	cursor: crosshair;
 }
-#board:focus-visible { outline: 3px solid var(--focus); outline-offset: -3px; }
+/* The canvas already draws its own keyboard cursor; a focus ring around the
+   whole field is distracting, so no outline is shown on the board. */
+#board:focus, #board:focus-visible { outline: none; }
 #board.is-locked { cursor: not-allowed; }
 #board.is-thinking { cursor: grab; }
 
