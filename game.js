@@ -310,6 +310,12 @@
 	 * attaches to it (the old contour keeps its exact shape, the new line just
 	 * meets it), while a freshly drawn dot still takes at most two segments so
 	 * new contours stay simple.
+	 *
+	 * Straight segments are all placed first; diagonals come second and one is
+	 * dropped when its ends are already joined through a shared dot by two
+	 * straight segments. That is the corner "shortcut": without the check the
+	 * contour would fill the right angle with an extra diagonal instead of
+	 * running through the corner dot.
 	 */
 	function extendOutline(state, owner, touch, edges) {
 		var cands = outlineCandidates(state, owner, touch);
@@ -317,17 +323,24 @@
 
 		var used = new Set();
 		var deg = new Map();
+		var adj = new Map();
 		function bump(k) { deg.set(k, (deg.get(k) || 0) + 1); }
+		function link(a, b) {
+			if (!adj.has(a)) adj.set(a, new Set());
+			if (!adj.has(b)) adj.set(b, new Set());
+			adj.get(a).add(b); adj.get(b).add(a);
+		}
 		for (var i = 0; i < edges.length; i++) {
 			if (edges[i].owner !== owner) continue;
 			var ea = E.key(edges[i].ax, edges[i].ay);
 			var eb = E.key(edges[i].bx, edges[i].by);
 			var ek0 = edgeKey(ea, eb);
 			if (used.has(ek0)) continue;
-			used.add(ek0); bump(ea); bump(eb);
+			used.add(ek0); bump(ea); bump(eb); link(ea, eb);
 		}
 		var seedDeg = new Map(deg);
 		function limit(k) { return (seedDeg.get(k) || 0) > 0 ? 3 : 2; }
+
 		var neighbors = new Map();
 		function ensure(k) { if (!neighbors.has(k)) neighbors.set(k, []); }
 		var candSeen = new Set();
@@ -348,23 +361,55 @@
 		neighbors.forEach(function (_, k) { order.push(k); });
 		order.sort(function (a, b) { return neighbors.get(a).length - neighbors.get(b).length; });
 
-		for (var u = 0; u < order.length; u++) {
-			var from = order[u];
-			if ((deg.get(from) || 0) >= limit(from)) continue;
-			var nb = neighbors.get(from).slice().sort(function (a, b) {
+		function tryAdd(from, to) {
+			if ((deg.get(from) || 0) >= limit(from)) return;
+			if ((deg.get(to) || 0) >= limit(to)) return;
+			var ek = edgeKey(from, to);
+			if (used.has(ek)) return;
+			used.add(ek); bump(from); bump(to); link(from, to);
+			var p1 = E.parseKey(from), p2 = E.parseKey(to);
+			edges.push({ ax: p1[0], ay: p1[1], bx: p2[0], by: p2[1], owner: owner });
+		}
+
+		function ordered(from, orthoOnly) {
+			return neighbors.get(from).slice().filter(function (n) {
+				return orthoOnly ? n.ortho : true;
+			}).sort(function (a, b) {
 				if (a.ortho !== b.ortho) return a.ortho ? -1 : 1;
 				return (deg.get(a.k) || 0) - (deg.get(b.k) || 0);
 			});
-			for (var j = 0; j < nb.length && (deg.get(from) || 0) < limit(from); j++) {
-				var to = nb[j].k;
-				if ((deg.get(to) || 0) >= limit(to)) continue;
-				var ek2 = edgeKey(from, to);
-				if (used.has(ek2)) continue;
-				used.add(ek2); bump(from); bump(to);
-				var p1 = E.parseKey(from), p2 = E.parseKey(to);
-				edges.push({ ax: p1[0], ay: p1[1], bx: p2[0], by: p2[1], owner: owner });
+		}
+
+		/* straight segments first: a corner never takes a diagonal shortcut */
+		for (var u = 0; u < order.length; u++) {
+			var oFrom = order[u];
+			var onb = ordered(oFrom, true);
+			for (var oj = 0; oj < onb.length; oj++) tryAdd(oFrom, onb[oj].k);
+		}
+		/* then diagonals, skipping the ones that only cut a drawn corner */
+		for (var v = 0; v < order.length; v++) {
+			var dFrom = order[v];
+			var dnb = ordered(dFrom, false);
+			for (var dj = 0; dj < dnb.length; dj++) {
+				if (dnb[dj].ortho) continue;
+				var to = dnb[dj].k;
+				if (cutsCorner(dFrom, to, adj)) continue;
+				tryAdd(dFrom, to);
 			}
 		}
+	}
+
+	/* true when `a` and `b` are already joined through a shared dot by two segments */
+	function cutsCorner(a, b, adj) {
+		var na = adj.get(a);
+		if (!na) return false;
+		var hit = false;
+		na.forEach(function (mid) {
+			if (mid === b || hit) return;
+			var nm = adj.get(mid);
+			if (nm && nm.has(b)) hit = true;
+		});
+		return hit;
 	}
 
 	function extendScene(player, claimed) {
@@ -423,10 +468,10 @@
 			ctx.lineWidth = 2;
 			ctx.strokeRect(sx(b.x0), sy(b.y0), (b.x1 - b.x0) * sc, (b.y1 - b.y0) * sc);
 		}
-		/* fortress outlines */
+		/* fortress outlines (30% thinner than before) */
 		ctx.lineCap = 'round';
 		ctx.lineJoin = 'round';
-		ctx.lineWidth = Math.max(1.5, sc * 0.11);
+		ctx.lineWidth = Math.max(1.05, sc * 0.077);
 		for (var i = 0; i < ui.scene.edges.length; i++) {
 			var e = ui.scene.edges[i];
 			ctx.strokeStyle = e.owner === 1 ? pal.p1 : pal.p2;
