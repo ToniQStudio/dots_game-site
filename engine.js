@@ -71,6 +71,9 @@
 			turn: P1,
 			score: { 1: 0, 2: 0 },
 			rules: { extraTurn: options.extraTurn !== false },
+			bounds: options.bounds
+				? { x0: options.bounds.x0, y0: options.bounds.y0, x1: options.bounds.x1, y1: options.bounds.y1 }
+				: null,
 			lastMove: null,
 			moveCount: 0
 		};
@@ -83,6 +86,9 @@
 			turn: state.turn,
 			score: { 1: state.score[1], 2: state.score[2] },
 			rules: { extraTurn: state.rules.extraTurn },
+			bounds: state.bounds
+				? { x0: state.bounds.x0, y0: state.bounds.y0, x1: state.bounds.x1, y1: state.bounds.y1 }
+				: null,
 			lastMove: state.lastMove
 				? { x: state.lastMove.x, y: state.lastMove.y, player: state.lastMove.player }
 				: null,
@@ -90,9 +96,16 @@
 		};
 	}
 
+	/* Inside the rectangular field, when the game has one. Infinite otherwise. */
+	function inBounds(state, x, y) {
+		var b = state.bounds;
+		return !b || (x >= b.x0 && x <= b.x1 && y >= b.y0 && y <= b.y1);
+	}
+
 	function canPlace(state, x, y) {
 		var k = key(x, y);
-		return !state.dots.has(k) && !state.claimed.has(k);
+		if (state.dots.has(k) || state.claimed.has(k)) return false;
+		return inBounds(state, x, y);
 	}
 
 	/*
@@ -173,7 +186,7 @@
 	 */
 	function applyMove(state, x, y) {
 		var k0 = key(x, y);
-		if (state.dots.has(k0) || state.claimed.has(k0)) return { ok: false };
+		if (!canPlace(state, x, y)) return { ok: false };
 
 		var player = state.turn;
 		var foe = other(player);
@@ -374,7 +387,7 @@
 					var nx = x + dx, ny = y + dy;
 					var nk = key(nx, ny);
 					if (cand.has(nk)) continue;
-					if (state.dots.has(nk) || state.claimed.has(nk)) continue;
+					if (!canPlace(state, nx, ny)) continue;
 					cand.add(nk);
 				}
 			}
@@ -486,8 +499,14 @@
 
 		var moves = rootMoves(state, ctx);
 		if (!moves.length) {
-			if (!state.dots.size) return { x: 0, y: 0 };
-			return null;
+			if (state.dots.size) return null;
+			if (state.bounds) {
+				return {
+					x: Math.floor((state.bounds.x0 + state.bounds.x1) / 2),
+					y: Math.floor((state.bounds.y0 + state.bounds.y1) / 2)
+				};
+			}
+			return { x: 0, y: 0 };
 		}
 
 		var best = { x: moves[0].x, y: moves[0].y };
@@ -547,6 +566,7 @@
 		ownerOf: ownerOf,
 		createGame: createGame,
 		clone: clone,
+		inBounds: inBounds,
 		canPlace: canPlace,
 		place: place,
 		applyMove: applyMove,

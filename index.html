@@ -62,15 +62,16 @@
 </header>
 
 <div class="board__tools" role="group" aria-label="Навигация по полю">
-	<button class="tool" id="zoomOut" type="button" aria-label="Уменьшить масштаб" title="Уменьшить">
-		<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6"/></svg>
+	<button class="tool" id="zoomIn" type="button" aria-label="Увеличить масштаб" title="Увеличить">
+		<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg>
 	</button>
 	<button class="tool tool--zoom" id="zoomReset" type="button" aria-label="Сбросить масштаб" title="Сбросить масштаб">
 		<span id="zoomLabel">100%</span>
 	</button>
-	<button class="tool" id="zoomIn" type="button" aria-label="Увеличить масштаб" title="Увеличить">
-		<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6M11 8v6"/></svg>
+	<button class="tool" id="zoomOut" type="button" aria-label="Уменьшить масштаб" title="Уменьшить">
+		<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3M8 11h6"/></svg>
 	</button>
+	<span class="tool__sep" aria-hidden="true"></span>
 	<button class="tool" id="centerLast" type="button" aria-label="Вернуться к последней точке" title="К последней точке">
 		<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/><circle cx="12" cy="12" r="1.6" fill="currentColor" stroke="none"/></svg>
 	</button>
@@ -84,6 +85,22 @@
 			<div class="segmented" role="group" aria-labelledby="modeLabel">
 				<button class="segmented__opt is-active" data-mode="pvp" type="button" aria-pressed="true">Вдвоём</button>
 				<button class="segmented__opt" data-mode="bot" type="button" aria-pressed="false">Компьютер</button>
+			</div>
+		</div>
+		<div class="setting" id="difficultySetting" hidden>
+			<span class="setting__label" id="difficultyLabel">Сложность</span>
+			<div class="segmented segmented--3" role="group" aria-labelledby="difficultyLabel">
+				<button class="segmented__opt" data-difficulty="easy" type="button" aria-pressed="false">Лёгкий</button>
+				<button class="segmented__opt is-active" data-difficulty="medium" type="button" aria-pressed="true">Средний</button>
+				<button class="segmented__opt" data-difficulty="hard" type="button" aria-pressed="false">Сложный</button>
+			</div>
+		</div>
+		<div class="setting">
+			<span class="setting__label" id="sizeLabel">Поле</span>
+			<div class="segmented segmented--3" role="group" aria-labelledby="sizeLabel">
+				<button class="segmented__opt" data-size="small" type="button" aria-pressed="false">30×30</button>
+				<button class="segmented__opt" data-size="medium" type="button" aria-pressed="false">60×60</button>
+				<button class="segmented__opt is-active" data-size="infinite" type="button" aria-pressed="true">Без границ</button>
 			</div>
 		</div>
 	</div>
@@ -132,7 +149,7 @@
 </aside>
 
 <p class="sr-only" id="boardHelp">
-	Бесконечное поле: перетаскивайте для перемещения, колесо — прокрутка, Ctrl и колесо — масштаб. Enter со стрелками ставит точку.
+	Поле: перетаскивайте для перемещения, колесо — прокрутка, Ctrl и колесо — масштаб (50–150%). Enter со стрелками ставит точку.
 </p>
 
 <div class="sr-only" id="live" aria-live="polite" aria-atomic="true"></div>
@@ -163,7 +180,8 @@
 			<h3>Ход и победа</h3>
 			<ul>
 				<li>Соперники всегда ходят по очереди.</li>
-				<li>Поле бесконечное: перемещайтесь перетаскиванием, масштаб — колесом или кнопками.</li>
+				<li>Играть можно вдвоём или против компьютера. У компьютера три уровня: лёгкий, средний и сложный.</li>
+				<li>Поле можно выбрать: 30×30 клеток, 60×60 клеток или без границ. Перемещайтесь перетаскиванием, масштаб — колесом или кнопками (50–150%).</li>
 				<li>Партия заканчивается, когда игрок сдаётся или соперники завершают игру.</li>
 				<li>Побеждает тот, кто взял в плен больше точек соперника.</li>
 			</ul>

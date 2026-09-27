@@ -12,8 +12,19 @@
 	var E = window.DotsEngine;
 	var TAU = Math.PI * 2;
 	var BASE_CELL = 34;
-	var MIN_ZOOM = 0.5;
-	var MAX_ZOOM = 1.5;
+	var ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5];
+	var MIN_ZOOM = ZOOM_LEVELS[0];
+	var MAX_ZOOM = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
+
+	/* Field size — side length in cells; null is the endless board. */
+	var FIELD_SIZES = { small: 30, medium: 60, infinite: null };
+
+	/* Bot presets; `blunder` is the chance of a random move (weaker levels). */
+	var DIFFICULTY = {
+		easy: { timeBudget: 260, maxDepth: 2, maxMoves: 6, blunder: 0.35 },
+		medium: { timeBudget: 700, maxDepth: 4, maxMoves: 10, blunder: 0.1 },
+		hard: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, blunder: 0 }
+	};
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 	var NAMES_DATIVE = { 1: 'синим', 2: 'красным' };
@@ -32,6 +43,8 @@
 		state: null,
 		history: [],
 		mode: 'pvp',
+		size: 'infinite',
+		difficulty: 'medium',
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
 		hover: null,
@@ -40,7 +53,8 @@
 		ended: false,
 		palette: null,
 		pointers: new Map(),
-		gesture: null
+		gesture: null,
+		wheelAccum: 0
 	};
 
 	/* --------------------------------------------------------------- utils --- */
@@ -126,12 +140,57 @@
 		return { x: x, y: y };
 	}
 
-	function zoomAtScreen(sx, sy, factor) {
+	function zoomIndex() {
+		var best = 0, bestDist = Infinity;
+		for (var i = 0; i < ZOOM_LEVELS.length; i++) {
+			var d = Math.abs(ZOOM_LEVELS[i] - ui.cam.zoom);
+			if (d < bestDist) { bestDist = d; best = i; }
+		}
+		return best;
+	}
+
+	/* Zoom is discrete: always one of ZOOM_LEVELS, anchored at a screen point. */
+	function setZoomAtScreen(sx, sy, level) {
 		var before = screenToWorld(sx, sy);
-		ui.cam.zoom = clamp(ui.cam.zoom * factor, MIN_ZOOM, MAX_ZOOM);
+		ui.cam.zoom = clamp(level, MIN_ZOOM, MAX_ZOOM);
 		var after = screenToWorld(sx, sy);
 		ui.cam.x += before[0] - after[0];
 		ui.cam.y += before[1] - after[1];
+	}
+
+	function stepZoom(dir, sx, sy) {
+		var i = clamp(zoomIndex() + dir, 0, ZOOM_LEVELS.length - 1);
+		setZoomAtScreen(sx, sy, ZOOM_LEVELS[i]);
+	}
+
+	function levelForFit(fitZoom) {
+		var level = ZOOM_LEVELS[0];
+		for (var i = ZOOM_LEVELS.length - 1; i >= 0; i--) {
+			if (ZOOM_LEVELS[i] <= fitZoom) { level = ZOOM_LEVELS[i]; break; }
+		}
+		return level;
+	}
+
+	/* Keep a bounded board from being dragged far out of view. */
+	function clampCamera() {
+		var b = ui.state && ui.state.bounds;
+		if (!b) return;
+		var pad = 2;
+		ui.cam.x = clamp(ui.cam.x, b.x0 - pad, b.x1 + pad);
+		ui.cam.y = clamp(ui.cam.y, b.y0 - pad, b.y1 + pad);
+	}
+
+	function frameBoard() {
+		var b = ui.state && ui.state.bounds;
+		if (!b) {
+			ui.cam.x = 0; ui.cam.y = 0; ui.cam.zoom = 1;
+			return;
+		}
+		ui.cam.x = (b.x0 + b.x1) / 2;
+		ui.cam.y = (b.y0 + b.y1) / 2;
+		var w = (b.x1 - b.x0 + 2) * BASE_CELL;
+		var h = (b.y1 - b.y0 + 2) * BASE_CELL;
+		ui.cam.zoom = levelForFit(Math.min(ui.metrics.cssW / w, ui.metrics.cssH / h));
 	}
 
 	function updateZoomLabel() {
@@ -336,20 +395,33 @@
 		var left = ui.cam.x - halfW / sc, right = ui.cam.x + halfW / sc;
 		var top = ui.cam.y - halfH / sc, bottom = ui.cam.y + halfH / sc;
 
+		/* A bounded field defines where the grid is drawn and where play stops. */
+		var b = s.bounds;
+		var gL = b ? Math.max(left, b.x0) : left;
+		var gR = b ? Math.min(right, b.x1) : right;
+		var gT = b ? Math.max(top, b.y0) : top;
+		var gB = b ? Math.min(bottom, b.y1) : bottom;
+
 		/* grid, with an adaptive step so lines never crowd together */
 		var step = 1;
 		while (sc * step < 14) step *= 2;
 		ctx.lineWidth = 1;
 		ctx.strokeStyle = pal.grid;
-		var gx0 = Math.floor(left / step) * step;
-		for (var gx = gx0; gx <= right; gx += step) {
+		var gx0 = Math.ceil(gL / step) * step;
+		for (var gx = gx0; gx <= gR; gx += step) {
 			var X = Math.round(sx(gx)) + 0.5;
-			ctx.beginPath(); ctx.moveTo(X, 0); ctx.lineTo(X, m.cssH); ctx.stroke();
+			ctx.beginPath(); ctx.moveTo(X, sy(gT)); ctx.lineTo(X, sy(gB)); ctx.stroke();
 		}
-		var gy0 = Math.floor(top / step) * step;
-		for (var gy = gy0; gy <= bottom; gy += step) {
+		var gy0 = Math.ceil(gT / step) * step;
+		for (var gy = gy0; gy <= gB; gy += step) {
 			var Y = Math.round(sy(gy)) + 0.5;
-			ctx.beginPath(); ctx.moveTo(0, Y); ctx.lineTo(m.cssW, Y); ctx.stroke();
+			ctx.beginPath(); ctx.moveTo(sx(gL), Y); ctx.lineTo(sx(gR), Y); ctx.stroke();
+		}
+		/* the edge of the sheet */
+		if (b) {
+			ctx.strokeStyle = pal.gridBold;
+			ctx.lineWidth = 2;
+			ctx.strokeRect(sx(b.x0), sy(b.y0), (b.x1 - b.x0) * sc, (b.y1 - b.y0) * sc);
 		}
 		/* fortress outlines */
 		ctx.lineCap = 'round';
@@ -487,19 +559,27 @@
 
 	/* ----------------------------------------------------------- new game --- */
 
+	function boundsForSize(size) {
+		var cells = FIELD_SIZES[size];
+		if (!cells) return null;
+		return { x0: 0, y0: 0, x1: cells, y1: cells };
+	}
+
 	function newGame() {
-		ui.state = E.createGame({ extraTurn: false });
+		ui.state = E.createGame({ extraTurn: false, bounds: boundsForSize(ui.size) });
 		ui.history = [];
 		ui.ended = false;
 		ui.thinking = false;
 		ui.hover = null;
 		ui.flash = null;
 		ui.keyboard = false;
-		ui.cursor.x = 0; ui.cursor.y = 0;
-		ui.cam.x = 0; ui.cam.y = 0; ui.cam.zoom = 1;
 		ui.scene = { edges: [] };
-		updateZoomLabel();
+		var b = ui.state.bounds;
+		ui.cursor.x = b ? Math.floor((b.x0 + b.x1) / 2) : 0;
+		ui.cursor.y = b ? Math.floor((b.y0 + b.y1) / 2) : 0;
 		fit();
+		frameBoard();
+		updateZoomLabel();
 		render();
 		updatePanel();
 	}
@@ -532,6 +612,7 @@
 		}
 
 		var bot = ui.mode === 'bot';
+		els.difficultySetting.hidden = !bot;
 		els.you1.hidden = !bot;
 		els.you2.hidden = !bot;
 		els.you2.textContent = 'соперник';
@@ -545,6 +626,26 @@
 
 	/* ----------------------------------------------------------------- bot --- */
 
+	/* A legal move near the dots, used for the weaker bot's occasional slips. */
+	function randomMove(player) {
+		var s = ui.state;
+		var pick = null, seen = 0;
+		s.dots.forEach(function (v, k) {
+			var p = E.parseKey(k);
+			var r = (v === player) ? 1 : 2;
+			for (var dx = -r; dx <= r; dx++) {
+				for (var dy = -r; dy <= r; dy++) {
+					if (!dx && !dy) continue;
+					var x = p[0] + dx, y = p[1] + dy;
+					if (!E.canPlace(s, x, y)) continue;
+					seen++;
+					if (Math.random() < 1 / seen) pick = { x: x, y: y };
+				}
+			}
+		});
+		return pick;
+	}
+
 	function scheduleBot() {
 		if (ui.mode !== 'bot' || ui.ended || ui.thinking) return;
 		ui.thinking = true;
@@ -552,7 +653,15 @@
 		window.setTimeout(function () {
 			ui.thinking = false;
 			if (ui.mode !== 'bot' || ui.ended || ui.state.turn !== 2) { render(); updatePanel(); return; }
-			var move = E.bestMove(ui.state, 2, { timeBudget: 900, maxDepth: 6, maxMoves: 12 });
+			var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
+			var move = (preset.blunder && Math.random() < preset.blunder) ? randomMove(2) : null;
+			if (!move) {
+				move = E.bestMove(ui.state, 2, {
+					timeBudget: preset.timeBudget,
+					maxDepth: preset.maxDepth,
+					maxMoves: preset.maxMoves
+				});
+			}
 			if (!move) { render(); updatePanel(); return; }
 			commitMove(move.x, move.y);
 		}, 420);
@@ -585,20 +694,22 @@
 
 	function centerOnLast() {
 		var target = ui.state.lastMove;
-		var tx = target ? target.x : 0;
-		var ty = target ? target.y : 0;
+		var b = ui.state.bounds;
+		var tx = target ? target.x : (b ? (b.x0 + b.x1) / 2 : 0);
+		var ty = target ? target.y : (b ? (b.y0 + b.y1) / 2 : 0);
 		animateCam(tx, ty, 320);
 	}
 
 	function animateCam(tx, ty, duration) {
 		var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-		if (reduced) { ui.cam.x = tx; ui.cam.y = ty; render(); return; }
+		if (reduced) { ui.cam.x = tx; ui.cam.y = ty; clampCamera(); render(); return; }
 		var startX = ui.cam.x, startY = ui.cam.y, t0 = performance.now();
 		function frame(now) {
 			var t = Math.min(1, (now - t0) / duration);
 			var e = 1 - Math.pow(1 - t, 3);
 			ui.cam.x = startX + (tx - startX) * e;
 			ui.cam.y = startY + (ty - startY) * e;
+			clampCamera();
 			render();
 			if (t < 1) requestAnimationFrame(frame);
 		}
@@ -606,11 +717,20 @@
 	}
 
 	function applySettingsUI() {
-		Array.prototype.forEach.call(els.segmented, function (btn) {
-			var on = btn.getAttribute('data-mode') === ui.mode;
-			btn.classList.toggle('is-active', on);
-			btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+		Array.prototype.forEach.call(els.modeOpts, function (btn) {
+			markOption(btn, btn.getAttribute('data-mode') === ui.mode);
 		});
+		Array.prototype.forEach.call(els.sizeOpts, function (btn) {
+			markOption(btn, btn.getAttribute('data-size') === ui.size);
+		});
+		Array.prototype.forEach.call(els.difficultyOpts, function (btn) {
+			markOption(btn, btn.getAttribute('data-difficulty') === ui.difficulty);
+		});
+	}
+
+	function markOption(btn, on) {
+		btn.classList.toggle('is-active', on);
+		btn.setAttribute('aria-pressed', on ? 'true' : 'false');
 	}
 
 	/* -------------------------------------------------------------- dialogs --- */
@@ -705,9 +825,12 @@
 				ui.gesture = { type: 'pan', moved: false, sx: evt.clientX, sy: evt.clientY, camx: ui.cam.x, camy: ui.cam.y };
 			} else if (ui.pointers.size === 2) {
 				var pts = Array.from(ui.pointers.values());
+				var d0 = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
 				ui.gesture = {
 					type: 'pinch',
-					dist: Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y),
+					dist: d0,
+					dist0: d0,
+					zoomIndex: zoomIndex(),
 					mid: { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 }
 				};
 			}
@@ -724,6 +847,7 @@
 					var sc = scale();
 					ui.cam.x = g.camx - dx / sc;
 					ui.cam.y = g.camy - dy / sc;
+					clampCamera();
 					render();
 				}
 				return;
@@ -732,13 +856,20 @@
 				var pts = Array.from(ui.pointers.values());
 				var dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
 				var mid = { x: (pts[0].x + pts[1].x) / 2, y: (pts[0].y + pts[1].y) / 2 };
-				if (g.dist > 0) {
-					var rect = els.canvas.getBoundingClientRect();
-					zoomAtScreen(mid.x - rect.left, mid.y - rect.top, dist / g.dist);
+				if (g.dist0 > 0) {
+					var ratio = dist / g.dist0;
+					var stepDir = ratio >= 1.3 ? 1 : (ratio <= 0.77 ? -1 : 0);
+					if (stepDir) {
+						g.zoomIndex = clamp(g.zoomIndex + stepDir, 0, ZOOM_LEVELS.length - 1);
+						g.dist0 = dist;
+						var rect = els.canvas.getBoundingClientRect();
+						setZoomAtScreen(mid.x - rect.left, mid.y - rect.top, ZOOM_LEVELS[g.zoomIndex]);
+						clampCamera();
+					}
 				}
-				g.dist = dist;
 				g.mid = mid;
 				render();
+				updateZoomLabel();
 				return;
 			}
 			if (evt.pointerType === 'mouse') updateHover(evt);
@@ -771,11 +902,17 @@
 			evt.preventDefault();
 			var p = localPoint(evt);
 			if (evt.ctrlKey || evt.metaKey) {
-				zoomAtScreen(p.x, p.y, Math.exp(-evt.deltaY * 0.002));
+				/* one discrete level per wheel notch, however small the deltas are */
+				ui.wheelAccum += evt.deltaY;
+				var threshold = 40;
+				while (ui.wheelAccum <= -threshold) { stepZoom(1, p.x, p.y); ui.wheelAccum += threshold; }
+				while (ui.wheelAccum >= threshold) { stepZoom(-1, p.x, p.y); ui.wheelAccum -= threshold; }
 			} else {
+				ui.wheelAccum = 0;
 				var sc = scale();
 				ui.cam.x += (evt.deltaX || 0) / sc;
 				ui.cam.y += (evt.deltaY || 0) / sc;
+				clampCamera();
 			}
 			render();
 			updateZoomLabel();
@@ -790,8 +927,8 @@
 			else if (key === 'ArrowUp') c.y -= 1;
 			else if (key === 'ArrowDown') c.y += 1;
 			else if (key === 'Enter' || key === ' ' || key === 'Spacebar') { attemptPlace(c.x, c.y); }
-			else if (key === '+' || key === '=') { zoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 1.25); }
-			else if (key === '-' || key === '_') { zoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 0.8); }
+			else if (key === '+' || key === '=') { stepZoom(1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); }
+			else if (key === '-' || key === '_') { stepZoom(-1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); }
 			else handled = false;
 			if (!handled) return;
 			evt.preventDefault();
@@ -814,23 +951,42 @@
 		els.themeBtn.addEventListener('click', toggleTheme);
 		els.rulesBtn.addEventListener('click', function () { els.rulesDialog.showModal(); });
 		els.zoomIn.addEventListener('click', function () {
-			zoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 1.25); render(); updateZoomLabel();
+			stepZoom(1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); render(); updateZoomLabel();
 		});
 		els.zoomOut.addEventListener('click', function () {
-			zoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 0.8); render(); updateZoomLabel();
+			stepZoom(-1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); render(); updateZoomLabel();
 		});
 		els.zoomReset.addEventListener('click', function () {
-			zoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 1 / ui.cam.zoom); render(); updateZoomLabel();
+			setZoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 1); render(); updateZoomLabel();
 		});
 		els.centerLast.addEventListener('click', centerOnLast);
 
-		Array.prototype.forEach.call(els.segmented, function (btn) {
+		Array.prototype.forEach.call(els.modeOpts, function (btn) {
 			btn.addEventListener('click', function () {
 				var next = btn.getAttribute('data-mode');
 				if (next === ui.mode) return;
 				ui.mode = next;
 				applySettingsUI();
 				saveSetting('dots:mode', next);
+				newGame();
+			});
+		});
+
+		Array.prototype.forEach.call(els.difficultyOpts, function (btn) {
+			btn.addEventListener('click', function () {
+				ui.difficulty = btn.getAttribute('data-difficulty');
+				applySettingsUI();
+				saveSetting('dots:difficulty', ui.difficulty);
+			});
+		});
+
+		Array.prototype.forEach.call(els.sizeOpts, function (btn) {
+			btn.addEventListener('click', function () {
+				var next = btn.getAttribute('data-size');
+				if (next === ui.size) return;
+				ui.size = next;
+				applySettingsUI();
+				saveSetting('dots:size', next);
 				newGame();
 			});
 		});
@@ -864,6 +1020,11 @@
 	}
 
 	function ensureCursorVisible() {
+		var b = ui.state.bounds;
+		if (b) {
+			ui.cursor.x = clamp(ui.cursor.x, b.x0, b.x1);
+			ui.cursor.y = clamp(ui.cursor.y, b.y0, b.y1);
+		}
 		var sc = scale();
 		var halfW = ui.metrics.cssW / 2 / sc;
 		var halfH = ui.metrics.cssH / 2 / sc;
@@ -872,6 +1033,7 @@
 		if (ui.cursor.x > ui.cam.x + marginX) ui.cam.x = ui.cursor.x - marginX;
 		if (ui.cursor.y < ui.cam.y - marginY) ui.cam.y = ui.cursor.y + marginY;
 		if (ui.cursor.y > ui.cam.y + marginY) ui.cam.y = ui.cursor.y - marginY;
+		clampCamera();
 	}
 
 	function saveSetting(k, v) { try { localStorage.setItem(k, v); } catch (err) {} }
@@ -938,11 +1100,18 @@
 		els.confirmLead = $('confirmLead');
 		els.confirmOk = $('confirmOk');
 		els.confirmCancel = $('confirmCancel');
-		els.segmented = document.querySelectorAll('.segmented__opt');
+		els.modeOpts = document.querySelectorAll('[data-mode]');
+		els.sizeOpts = document.querySelectorAll('[data-size]');
+		els.difficultyOpts = document.querySelectorAll('[data-difficulty]');
+		els.difficultySetting = $('difficultySetting');
 		els.live = $('live');
 
 		initTheme();
 		ui.mode = loadSetting('dots:mode', 'pvp') === 'bot' ? 'bot' : 'pvp';
+		var size = loadSetting('dots:size', 'infinite');
+		ui.size = FIELD_SIZES.hasOwnProperty(size) ? size : 'infinite';
+		var diff = loadSetting('dots:difficulty', 'medium');
+		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
 		applySettingsUI();
 		newGame();
 		bindEvents();

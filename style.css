@@ -246,9 +246,8 @@ kbd {
 
 .board__tools {
 	position: fixed;
-	left: 14px;
-	top: 50%;
-	transform: translateY(-50%);
+	right: calc(var(--panel-w) + 14px);
+	bottom: 14px;
 	z-index: 5;
 	display: flex;
 	flex-direction: column;
@@ -260,6 +259,12 @@ kbd {
 	border: 1px solid var(--line);
 	border-radius: var(--radius-md);
 	box-shadow: var(--shadow-md);
+}
+.tool__sep {
+	display: block;
+	height: 1px;
+	margin: 4px 6px;
+	background: var(--line);
 }
 .tool {
 	display: inline-flex;
@@ -449,6 +454,7 @@ kbd {
 	box-shadow: var(--shadow-sm);
 }
 .setting { display: flex; flex-direction: column; gap: 8px; }
+.setting[hidden] { display: none; }
 .setting__label {
 	font-size: 12px;
 	font-weight: 600;
@@ -465,6 +471,8 @@ kbd {
 	background: var(--surface-2);
 	border-radius: var(--radius-md);
 }
+.segmented--3 { grid-template-columns: repeat(3, 1fr); }
+.segmented--3 .segmented__opt { padding: 0 6px; font-size: 12.5px; }
 .segmented__opt {
 	min-height: 36px;
 	padding: 0 10px;
@@ -579,6 +587,7 @@ kbd {
 		left: auto;
 		right: 14px;
 		top: 14px;
+		bottom: auto;
 		transform: none;
 	}
 	.hud--top { max-width: calc(100vw - 76px); }
