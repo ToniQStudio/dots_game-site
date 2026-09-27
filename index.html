@@ -55,7 +55,6 @@
 			</span>
 			<span class="brand__text">
 				<span class="brand__title">Точки</span>
-				<span class="brand__sub">Игра на клетчатой бумаге</span>
 			</span>
 		</div>
 		<div class="hud__actions">
@@ -81,6 +80,30 @@
 			<span class="meta meta--sep" aria-hidden="true">·</span>
 			<span class="meta" id="moveCount">Ходов: 0</span>
 		</div>
+	</div>
+
+	<div class="panel__body">
+
+	<div class="score" aria-label="Счёт">
+		<article class="score__card" id="card1" data-player="1" aria-label="Первый игрок">
+			<div class="score__head">
+				<span class="score__dot" aria-hidden="true"></span>
+				<span class="score__name" id="name1">Синие</span>
+				<span class="score__you" id="you1" hidden>вы</span>
+			</div>
+			<p class="score__value"><span id="score1">0</span><span class="score__unit">пленных</span></p>
+			<p class="score__note">Точек на поле: <span id="captured1">0</span></p>
+		</article>
+
+		<article class="score__card" id="card2" data-player="2" aria-label="Второй игрок">
+			<div class="score__head">
+				<span class="score__dot" aria-hidden="true"></span>
+				<span class="score__name" id="name2">Красные</span>
+				<span class="score__you" id="you2" hidden>соперник</span>
+			</div>
+			<p class="score__value"><span id="score2">0</span><span class="score__unit">пленных</span></p>
+			<p class="score__note">Точек на поле: <span id="captured2">0</span></p>
+		</article>
 	</div>
 
 	<div class="settings">
@@ -122,26 +145,6 @@
 		</div>
 	</div>
 
-	<div class="score" aria-label="Счёт">
-		<article class="score__card" id="card1" data-player="1" aria-label="Первый игрок">
-			<div class="score__head">
-				<span class="score__dot" aria-hidden="true"></span>
-				<span class="score__name" id="name1">Синие</span>
-				<span class="score__you" id="you1" hidden>вы</span>
-			</div>
-			<p class="score__value"><span id="score1">0</span><span class="score__unit">пленных</span></p>
-			<p class="score__note">Точек на поле: <span id="captured1">0</span></p>
-		</article>
-
-		<article class="score__card" id="card2" data-player="2" aria-label="Второй игрок">
-			<div class="score__head">
-				<span class="score__dot" aria-hidden="true"></span>
-				<span class="score__name" id="name2">Красные</span>
-				<span class="score__you" id="you2" hidden>соперник</span>
-			</div>
-			<p class="score__value"><span id="score2">0</span><span class="score__unit">пленных</span></p>
-			<p class="score__note">Точек на поле: <span id="captured2">0</span></p>
-		</article>
 	</div>
 
 	<div class="controls">
