@@ -248,11 +248,20 @@
 	function place(state, x, y) {
 		var log = applyMove(state, x, y);
 		if (!log.ok) return { ok: false };
+		var claimed = [];
+		for (var i = 0; i < log.claimedChanges.length; i++) {
+			var c = log.claimedChanges[i];
+			if (c.old === undefined) {
+				var p = parseKey(c.k);
+				claimed.push({ x: p[0], y: p[1] });
+			}
+		}
 		return {
 			ok: true,
 			player: log.player,
 			captured: log.captured,
 			capturedCount: log.capturedCount,
+			claimed: claimed,
 			extraTurn: log.extraTurn,
 			gameOver: false
 		};

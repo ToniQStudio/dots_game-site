@@ -1,10 +1,10 @@
 /*
  * "Точки" — interface layer.
  * The board is an infinite lattice shown through a camera: drag to pan, wheel
- * or pinch to zoom, buttons to zoom and jump back to the last move. Dots and
- * fortress outlines are drawn straight from the game state; outlines only
- * appear once enemy dots are actually enclosed, and every own dot is used by
- * at most two line segments.
+ * or pinch to zoom, buttons to zoom and jump back to the last move. Dots are
+ * drawn straight from the game state; fortress outlines only appear once enemy
+ * dots are actually enclosed, a segment that has been drawn once is permanent,
+ * and new enclosures attach to an existing outline instead of redrawing it.
  */
 (function () {
 	'use strict';
@@ -141,14 +141,25 @@
 	/* ------------------------------------------------------------- scene --- */
 
 	/*
-	 * A fortress is outlined region by region. For every captured region (a
-	 * 4-connected group of claimed cells) a segment between two of the
-	 * player's dots is on the border when the region sits on one side of it
-	 * and free space on the other. Doing this per region is what stops a
-	 * second, adjacent enclosure from treating the wall shared by the two
-	 * fortresses as "inside" and stitching them together with diagonals.
+	 * Fortress outlines are permanent. A segment, once drawn between two of a
+	 * player's dots, is never moved, re-paired or erased: an enclosure keeps
+	 * exactly the shape it had when it was first drawn. New captures only ever
+	 * *add* segments around the cells that were just claimed, and may attach to
+	 * the existing outline (a fully used dot, with two segments already, just
+	 * becomes a joint between the old contour and the new one).
+	 *
+	 * A segment is a candidate when its two ends are dots of the owner no more
+	 * than one cell apart (straight or diagonal) and the freshly claimed cells
+	 * sit on exactly one side of it. Per-region border logic keeps a wall that
+	 * is shared by two enclosures from being treated as "inside" and stitching
+	 * them together with diagonals. When several candidates compete for a dot,
+	 * straight segments win over diagonals, so a contour uses as many dots as
+	 * it can without ever bending through a diagonal shortcut.
 	 */
-	function buildOutline(state, owner) {
+
+	function edgeKey(a, b) { return a < b ? a + '|' + b : b + '|' + a; }
+
+	function outlineCandidates(state, owner, touch) {
 		var V = new Map();
 		state.dots.forEach(function (v, k) {
 			if (v !== owner) return;
@@ -201,60 +212,107 @@
 			}
 			return false;
 		}
+		function touches(touch, x, y, dx, dy) {
+			if (dy === 0) {
+				return touch.has(E.key(x, y - 1)) || touch.has(E.key(x + dx, y - 1)) ||
+					touch.has(E.key(x, y + 1)) || touch.has(E.key(x + dx, y + 1));
+			} else if (dx === 0) {
+				return touch.has(E.key(x - 1, y)) || touch.has(E.key(x - 1, y + dy)) ||
+					touch.has(E.key(x + 1, y)) || touch.has(E.key(x + 1, y + dy));
+			}
+			return touch.has(E.key(x + dx, y)) || touch.has(E.key(x, y + dy));
+		}
 
 		var dirs = [[1, 0], [0, 1], [1, 1], [-1, 1]];
-		var neighbors = new Map();
-		V.forEach(function (o, k) { neighbors.set(k, []); });
-		var seenEdge = new Set();
+		var seen = new Set();
+		var cands = [];
 		V.forEach(function (o) {
-			var self = E.key(o.x, o.y);
 			for (var d = 0; d < dirs.length; d++) {
 				var dx = dirs[d][0], dy = dirs[d][1];
 				var nk = E.key(o.x + dx, o.y + dy);
 				if (!V.has(nk)) continue;
 				if (!onSomeBorder(o.x, o.y, dx, dy)) continue;
-				var ek = self < nk ? self + '|' + nk : nk + '|' + self;
-				if (seenEdge.has(ek)) continue;
-				seenEdge.add(ek);
-				var ortho = (dx === 0 || dy === 0);
-				neighbors.get(self).push({ k: nk, ortho: ortho });
-				neighbors.get(nk).push({ k: self, ortho: ortho });
+				var a = E.key(o.x, o.y);
+				var ek = edgeKey(a, nk);
+				if (seen.has(ek)) continue;
+				seen.add(ek);
+				if (!touches(touch, o.x, o.y, dx, dy)) continue;
+				var b = V.get(nk);
+				cands.push({ ax: o.x, ay: o.y, bx: b.x, by: b.y, owner: owner });
 			}
 		});
-
-		var deg = new Map();
-		var order = [];
-		V.forEach(function (o, k) { deg.set(k, 0); order.push(k); });
-		order.sort(function (a, b) { return neighbors.get(a).length - neighbors.get(b).length; });
-
-		var used = new Set();
-		var edges = [];
-		for (var i = 0; i < order.length; i++) {
-			var u = order[i];
-			if (deg.get(u) >= 2) continue;
-			/* straight segments first, so a corner never takes a diagonal
-			   shortcut through the fortress */
-			var nb = neighbors.get(u).slice().sort(function (a, b) {
-				if (a.ortho !== b.ortho) return a.ortho ? -1 : 1;
-				return deg.get(a.k) - deg.get(b.k);
-			});
-			for (var j = 0; j < nb.length && deg.get(u) < 2; j++) {
-				var v = nb[j].k;
-				if (deg.get(v) >= 2) continue;
-				var ek2 = u < v ? u + '|' + v : v + '|' + u;
-				if (used.has(ek2)) continue;
-				used.add(ek2);
-				deg.set(u, deg.get(u) + 1);
-				deg.set(v, deg.get(v) + 1);
-				var a = V.get(u), b = V.get(v);
-				edges.push({ ax: a.x, ay: a.y, bx: b.x, by: b.y, owner: owner });
-			}
-		}
-		return edges;
+		return cands;
 	}
 
-	function computeScene() {
-		ui.scene = { edges: buildOutline(ui.state, 1).concat(buildOutline(ui.state, 2)) };
+	/*
+	 * Greedily add the candidate segments to `edges`, never touching what is
+	 * already there. Existing segments seed the per-dot degree: a dot that
+	 * already carries two segments becomes a junction when a new enclosure
+	 * attaches to it (the old contour keeps its exact shape, the new line just
+	 * meets it), while a freshly drawn dot still takes at most two segments so
+	 * new contours stay simple.
+	 */
+	function extendOutline(state, owner, touch, edges) {
+		var cands = outlineCandidates(state, owner, touch);
+		if (!cands.length) return;
+
+		var used = new Set();
+		var deg = new Map();
+		function bump(k) { deg.set(k, (deg.get(k) || 0) + 1); }
+		for (var i = 0; i < edges.length; i++) {
+			if (edges[i].owner !== owner) continue;
+			var ea = E.key(edges[i].ax, edges[i].ay);
+			var eb = E.key(edges[i].bx, edges[i].by);
+			var ek0 = edgeKey(ea, eb);
+			if (used.has(ek0)) continue;
+			used.add(ek0); bump(ea); bump(eb);
+		}
+		var seedDeg = new Map(deg);
+		function limit(k) { return (seedDeg.get(k) || 0) > 0 ? 3 : 2; }
+		var neighbors = new Map();
+		function ensure(k) { if (!neighbors.has(k)) neighbors.set(k, []); }
+		var candSeen = new Set();
+		for (var c = 0; c < cands.length; c++) {
+			var cd = cands[c];
+			var ca = E.key(cd.ax, cd.ay);
+			var cb = E.key(cd.bx, cd.by);
+			var ekc = edgeKey(ca, cb);
+			if (candSeen.has(ekc)) continue;
+			candSeen.add(ekc);
+			ensure(ca); ensure(cb);
+			var ortho = (cd.ax === cd.bx || cd.ay === cd.by);
+			neighbors.get(ca).push({ k: cb, ortho: ortho });
+			neighbors.get(cb).push({ k: ca, ortho: ortho });
+		}
+
+		var order = [];
+		neighbors.forEach(function (_, k) { order.push(k); });
+		order.sort(function (a, b) { return neighbors.get(a).length - neighbors.get(b).length; });
+
+		for (var u = 0; u < order.length; u++) {
+			var from = order[u];
+			if ((deg.get(from) || 0) >= limit(from)) continue;
+			var nb = neighbors.get(from).slice().sort(function (a, b) {
+				if (a.ortho !== b.ortho) return a.ortho ? -1 : 1;
+				return (deg.get(a.k) || 0) - (deg.get(b.k) || 0);
+			});
+			for (var j = 0; j < nb.length && (deg.get(from) || 0) < limit(from); j++) {
+				var to = nb[j].k;
+				if ((deg.get(to) || 0) >= limit(to)) continue;
+				var ek2 = edgeKey(from, to);
+				if (used.has(ek2)) continue;
+				used.add(ek2); bump(from); bump(to);
+				var p1 = E.parseKey(from), p2 = E.parseKey(to);
+				edges.push({ ax: p1[0], ay: p1[1], bx: p2[0], by: p2[1], owner: owner });
+			}
+		}
+	}
+
+	function extendScene(player, claimed) {
+		if (!claimed || !claimed.length) return;
+		var touch = new Set();
+		for (var i = 0; i < claimed.length; i++) touch.add(E.key(claimed[i].x, claimed[i].y));
+		extendOutline(ui.state, player, touch, ui.scene.edges);
 	}
 
 	/* ------------------------------------------------------------- drawing --- */
@@ -411,7 +469,7 @@
 		if (!res.ok) { ui.history.pop(); return; }
 		ui.hover = null;
 		ui.cursor.x = x; ui.cursor.y = y;
-		computeScene();
+		extendScene(res.player, res.claimed);
 		announce(res, player);
 		render();
 		updatePanel();
@@ -439,7 +497,7 @@
 		ui.keyboard = false;
 		ui.cursor.x = 0; ui.cursor.y = 0;
 		ui.cam.x = 0; ui.cam.y = 0; ui.cam.zoom = 1;
-		computeScene();
+		ui.scene = { edges: [] };
 		updateZoomLabel();
 		fit();
 		render();
