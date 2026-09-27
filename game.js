@@ -45,7 +45,6 @@
 	};
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
-	var NAMES_DATIVE = { 1: 'синим', 2: 'красным' };
 
 	var BADGE_TROPHY =
 		'<svg viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M6 3h12v5a6 6 0 0 1-12 0z"/><path d="M6 5H3v2a4 4 0 0 0 4 4M18 5h3v2a4 4 0 0 1-4 4"/></svg>';
@@ -822,10 +821,8 @@
 		els.startBtn.hidden = inProgress;
 		els.undoBtn.hidden = !started;
 		els.finishBtn.hidden = !started;
-		els.resignBtn.hidden = !started;
 		els.undoBtn.disabled = !ui.history.length || ui.thinking;
 		els.finishBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
-		els.resignBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
 		els.canvas.classList.toggle('is-locked', ui.ended || !ui.started);
 		els.canvas.classList.toggle('is-thinking', ui.thinking);
 		updateZoomLabel();
@@ -1324,7 +1321,6 @@
 				onOk: function () { showResult(null, 'manual'); }
 			});
 		});
-		els.resignBtn.addEventListener('click', requestResign);
 		els.themeBtn.addEventListener('click', toggleTheme);
 		els.rulesBtn.addEventListener('click', function () { els.rulesDialog.showModal(); });
 		els.zoomIn.addEventListener('click', function () {
@@ -1427,19 +1423,6 @@
 	function saveSetting(k, v) { try { localStorage.setItem(k, v); } catch (err) {} }
 	function loadSetting(k, f) { try { return localStorage.getItem(k) || f; } catch (err) { return f; } }
 
-	function requestResign() {
-		if (ui.ended || ui.state.moveCount === 0) return;
-		var resigner = ui.state.turn;
-		var winner = resigner === 1 ? 2 : 1;
-		askConfirm({
-			title: 'Сдаться?',
-			lead: NAMES[resigner] + ' признают поражение, победа достанется ' + NAMES_DATIVE[winner] + '.',
-			okLabel: 'Сдаться',
-			danger: true,
-			onOk: function () { showResult(winner, 'resign'); }
-		});
-	}
-
 	/* ------------------------------------------------------------- startup --- */
 
 	function init() {
@@ -1460,7 +1443,6 @@
 		els.startBtn = $('startBtn');
 		els.undoBtn = $('undoBtn');
 		els.finishBtn = $('finishBtn');
-		els.resignBtn = $('resignBtn');
 		els.themeBtn = $('themeBtn');
 		els.rulesBtn = $('rulesBtn');
 		els.zoomIn = $('zoomIn');
