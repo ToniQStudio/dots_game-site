@@ -574,9 +574,13 @@
 			if (v === 1 || v === 2) {
 				ctx.fillStyle = v === 1 ? pal.p1 : pal.p2;
 			} else {
-				/* a prisoner looks like an ordinary dot, just half transparent */
+				/*
+				 * A prisoner takes the colour of the side that captured it, so
+				 * a fortress and every dot inside it share one colour even when
+				 * a previously enclosed area has been enclosed again.
+				 */
 				var own = E.ownerOf(v);
-				ctx.fillStyle = own === 1 ? pal.p1 : pal.p2;
+				ctx.fillStyle = own === 1 ? pal.p2 : pal.p1;
 				ctx.globalAlpha = 0.5;
 			}
 			ctx.beginPath(); ctx.arc(px, py, sc * 0.15, 0, TAU); ctx.fill();
