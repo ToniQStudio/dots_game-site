@@ -122,6 +122,13 @@
 				<button class="segmented__opt" data-difficulty="hard" type="button" aria-pressed="false">Сложный</button>
 			</div>
 		</div>
+		<div class="setting" id="firstSetting" hidden>
+			<span class="setting__label" id="firstLabel">Первый ход</span>
+			<div class="segmented" role="group" aria-labelledby="firstLabel">
+				<button class="segmented__opt is-active" data-first="human" type="button" aria-pressed="true">Вы</button>
+				<button class="segmented__opt" data-first="bot" type="button" aria-pressed="false">Компьютер</button>
+			</div>
+		</div>
 		<div class="setting">
 			<span class="setting__label" id="sizeLabel">Поле</span>
 			<div class="segmented segmented--3" role="group" aria-labelledby="sizeLabel">
@@ -200,7 +207,7 @@
 			<h3>Ход и победа</h3>
 			<ul>
 				<li>Соперники всегда ходят по очереди.</li>
-				<li>Играть можно вдвоём или против компьютера. У компьютера три уровня: лёгкий, средний и сложный.</li>
+				<li>Играть можно вдвоём или против компьютера. У компьютера три уровня: лёгкий, средний и сложный; можно выбрать, кто ходит первым — вы или компьютер.</li>
 				<li>Поле можно выбрать: 20×20 клеток, 40×40 клеток или без границ.</li>
 				<li>Перед партией можно задать общее время: 20 секунд и больше или без учёта времени. Когда время выходит, партия завершается, а победитель определяется по числу пленных.</li>
 				<li>Пока партия идёт, параметры игры зафиксированы; менять их можно до начала или после окончания.</li>

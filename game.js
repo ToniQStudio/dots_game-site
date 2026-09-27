@@ -13,6 +13,8 @@
 	var TAU = Math.PI * 2;
 	var BASE_CELL = 34;
 	var ZOOM_LEVELS = [0.5, 0.75, 1, 1.25, 1.5];
+	/* Navigation shows multipliers rather than percentages. */
+	var ZOOM_LABELS = ['×1', '×2', '×3', '×5', '×6'];
 	var MIN_ZOOM = ZOOM_LEVELS[0];
 	var MAX_ZOOM = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
 
@@ -61,6 +63,7 @@
 		mode: 'pvp',
 		size: 'infinite',
 		difficulty: 'medium',
+		first: 'human',
 		timeLimit: 0,
 		timeIndex: 0,
 		deadline: null,
@@ -230,7 +233,7 @@
 	}
 
 	function updateZoomLabel() {
-		if (els.zoomLabel) els.zoomLabel.textContent = Math.round(ui.cam.zoom * 100) + '%';
+		if (els.zoomLabel) els.zoomLabel.textContent = ZOOM_LABELS[zoomIndex()] || Math.round(ui.cam.zoom * 100) + '%';
 	}
 
 	/* ------------------------------------------------------------- scene --- */
@@ -757,8 +760,10 @@
 		fit();
 		frameBoard();
 		updateZoomLabel();
+		if (ui.mode === 'bot' && ui.first === 'bot') ui.state.turn = 2;
 		render();
 		updatePanel();
+		if (ui.mode === 'bot' && ui.first === 'bot') scheduleBot();
 	}
 
 	/* --------------------------------------------------------------- panel --- */
@@ -790,6 +795,7 @@
 
 		var bot = ui.mode === 'bot';
 		els.difficultySetting.hidden = !bot;
+		els.firstSetting.hidden = !bot;
 		els.you1.hidden = !bot;
 		els.you2.hidden = !bot;
 		els.you2.textContent = 'соперник';
@@ -966,6 +972,9 @@
 		Array.prototype.forEach.call(els.difficultyOpts, function (btn) {
 			markOption(btn, btn.getAttribute('data-difficulty') === ui.difficulty);
 		});
+		Array.prototype.forEach.call(els.firstOpts, function (btn) {
+			markOption(btn, btn.getAttribute('data-first') === ui.first);
+		});
 		updateTimeUI();
 	}
 
@@ -980,6 +989,7 @@
 		if (els.panelStatus) els.panelStatus.hidden = !started;
 		if (els.scoreEl) els.scoreEl.hidden = !started;
 		if (els.settingsEl) els.settingsEl.hidden = inProgress;
+		if (els.controlsEl) els.controlsEl.hidden = !started;
 	}
 
 	/* The displayed value is the pending choice; the timer is only "on" when a
@@ -1294,6 +1304,17 @@
 			});
 		});
 
+		Array.prototype.forEach.call(els.firstOpts, function (btn) {
+			btn.addEventListener('click', function () {
+				var next = btn.getAttribute('data-first');
+				if (next === ui.first) return;
+				ui.first = next;
+				applySettingsUI();
+				saveSetting('dots:first', next);
+				newGame();
+			});
+		});
+
 		Array.prototype.forEach.call(els.sizeOpts, function (btn) {
 			btn.addEventListener('click', function () {
 				var next = btn.getAttribute('data-size');
@@ -1422,6 +1443,9 @@
 		els.modeOpts = document.querySelectorAll('[data-mode]');
 		els.sizeOpts = document.querySelectorAll('[data-size]');
 		els.difficultyOpts = document.querySelectorAll('[data-difficulty]');
+		els.firstOpts = document.querySelectorAll('[data-first]');
+		els.firstSetting = $('firstSetting');
+		els.controlsEl = document.querySelector('.controls');
 		els.timeStepper = $('timeStepper');
 		els.timeValue = $('timeValue');
 		els.timeDown = $('timeDown');
@@ -1443,6 +1467,7 @@
 		ui.size = FIELD_SIZES.hasOwnProperty(size) ? size : 'infinite';
 		var diff = loadSetting('dots:difficulty', 'medium');
 		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
+		ui.first = loadSetting('dots:first', 'human') === 'bot' ? 'bot' : 'human';
 		var storedIndex = parseInt(loadSetting('dots:timeIndex', '0'), 10);
 		ui.timeIndex = isNaN(storedIndex) ? 0 : Math.max(0, storedIndex);
 		ui.timeLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);

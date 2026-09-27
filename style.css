@@ -445,6 +445,7 @@ body.panel-hidden .panel { transform: translateX(100%); }
 .score__note { margin-top: 2px; font-size: 10.5px; color: var(--ink-3); }
 
 .controls { display: grid; grid-template-columns: 1fr; gap: 6px; flex: none; }
+.controls[hidden] { display: none; }
 
 .panel .btn { min-height: 36px; font-size: 13.5px; }
 .panel .btn--icon { width: 36px; min-height: 36px; }
