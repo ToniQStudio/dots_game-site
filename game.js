@@ -1535,11 +1535,18 @@
 			btn.addEventListener('click', function () {
 				var dlg = btn.closest('dialog');
 				if (dlg) dlg.close();
+				if (dlg === els.resultDialog) newGame();
 			});
 		});
 		Array.prototype.forEach.call(document.querySelectorAll('dialog'), function (dlg) {
-			dlg.addEventListener('click', function (evt) { if (evt.target === dlg) dlg.close(); });
+			dlg.addEventListener('click', function (evt) {
+				if (evt.target !== dlg) return;
+				dlg.close();
+				if (dlg === els.resultDialog) newGame();
+			});
 		});
+		/* Closing the result window (Esc or a close button) clears the board. */
+		els.resultDialog.addEventListener('close', function () { newGame(); });
 
 		if (window.ResizeObserver) {
 			var ro = new ResizeObserver(function () { fit(); render(); });
