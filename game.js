@@ -774,8 +774,8 @@
 		els.score2.textContent = s.score[2];
 		els.captured1.textContent = E.activeCount(s, 1);
 		els.captured2.textContent = E.activeCount(s, 2);
-		els.dotCount.textContent = 'Точек: ' + (E.activeCount(s, 1) + E.activeCount(s, 2));
-		els.moveCount.textContent = 'Ходов: ' + s.moveCount;
+		if (els.dotCount) els.dotCount.textContent = 'Точек: ' + (E.activeCount(s, 1) + E.activeCount(s, 2));
+		if (els.moveCount) els.moveCount.textContent = 'Ходов: ' + s.moveCount;
 
 		var active = ui.ended ? 0 : s.turn;
 		els.card1.classList.toggle('is-active', active === 1);
@@ -1280,10 +1280,6 @@
 		els.zoomOut.addEventListener('click', function () {
 			stepZoom(-1, viewCenterX(), ui.metrics.cssH / 2); render(); updateZoomLabel();
 		});
-		els.zoomReset.addEventListener('click', function () {
-			setZoomAtScreen(viewCenterX(), ui.metrics.cssH / 2, 1); render(); updateZoomLabel();
-		});
-		els.centerLast.addEventListener('click', centerOnLast);
 
 		Array.prototype.forEach.call(els.modeOpts, function (btn) {
 			btn.addEventListener('click', function () {
@@ -1422,9 +1418,6 @@
 		els.rulesBtn = $('rulesBtn');
 		els.zoomIn = $('zoomIn');
 		els.zoomOut = $('zoomOut');
-		els.zoomReset = $('zoomReset');
-		els.zoomLabel = $('zoomLabel');
-		els.centerLast = $('centerLast');
 		els.rulesDialog = $('rulesDialog');
 		els.resultDialog = $('resultDialog');
 		els.resultTitle = $('resultTitle');
