@@ -19,6 +19,9 @@
 	/* Field size — side length in cells; null is the endless board. */
 	var FIELD_SIZES = { small: 20, medium: 40, infinite: null };
 
+	/* Game-time choices in seconds; one past the end means "без учёта". */
+	var TIME_STEPS = [20, 40, 60, 120, 180, 300, 600];
+
 	/* Bot presets; `blunder` is the chance of a random move (weaker levels). */
 	var DIFFICULTY = {
 		easy: { timeBudget: 260, maxDepth: 2, maxMoves: 6, blunder: 0.35 },
@@ -46,8 +49,10 @@
 		size: 'infinite',
 		difficulty: 'medium',
 		timeLimit: 0,
+		timeIndex: 0,
 		deadline: null,
 		clockTimer: null,
+		panelHidden: false,
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
 		hover: null,
@@ -117,14 +122,26 @@
 		ui.ctx = els.canvas.getContext('2d');
 	}
 
+	function panelInsetX() {
+		if (ui.panelHidden) return 0;
+		if (window.innerWidth <= 900) return 0;
+		return els.panel ? els.panel.offsetWidth : 0;
+	}
+
+	/* Screen x the camera is centred on: the middle of the visible strip when
+	   the side panel is open, otherwise the middle of the window. */
+	function viewCenterX() {
+		return (ui.metrics.cssW - panelInsetX()) / 2;
+	}
+
 	function worldToScreen(wx, wy) {
 		var sc = scale();
-		return [ui.metrics.cssW / 2 + (wx - ui.cam.x) * sc, ui.metrics.cssH / 2 + (wy - ui.cam.y) * sc];
+		return [viewCenterX() + (wx - ui.cam.x) * sc, ui.metrics.cssH / 2 + (wy - ui.cam.y) * sc];
 	}
 
 	function screenToWorld(sx, sy) {
 		var sc = scale();
-		return [ui.cam.x + (sx - ui.metrics.cssW / 2) / sc, ui.cam.y + (sy - ui.metrics.cssH / 2) / sc];
+		return [ui.cam.x + (sx - viewCenterX()) / sc, ui.cam.y + (sy - ui.metrics.cssH / 2) / sc];
 	}
 
 	function localPoint(evt) {
@@ -137,7 +154,7 @@
 		var x = Math.round(world[0]);
 		var y = Math.round(world[1]);
 		var sc = scale();
-		var dx = sx - (ui.metrics.cssW / 2 + (x - ui.cam.x) * sc);
+		var dx = sx - (viewCenterX() + (x - ui.cam.x) * sc);
 		var dy = sy - (ui.metrics.cssH / 2 + (y - ui.cam.y) * sc);
 		if (Math.sqrt(dx * dx + dy * dy) > sc * 0.62) return null;
 		return { x: x, y: y };
@@ -193,7 +210,7 @@
 		ui.cam.y = (b.y0 + b.y1) / 2;
 		var w = (b.x1 - b.x0 + 2) * BASE_CELL;
 		var h = (b.y1 - b.y0 + 2) * BASE_CELL;
-		ui.cam.zoom = levelForFit(Math.min(ui.metrics.cssW / w, ui.metrics.cssH / h));
+		ui.cam.zoom = levelForFit(Math.min((ui.metrics.cssW - panelInsetX()) / w, ui.metrics.cssH / h));
 	}
 
 	function updateZoomLabel() {
@@ -431,17 +448,17 @@
 		var ctx = ui.ctx;
 		var m = ui.metrics;
 		var sc = scale();
-		var halfW = m.cssW / 2, halfH = m.cssH / 2;
+		var cx = viewCenterX(), cy = m.cssH / 2;
 
 		ctx.setTransform(m.dpr, 0, 0, m.dpr, 0, 0);
 		ctx.clearRect(0, 0, m.cssW, m.cssH);
 		ctx.fillStyle = pal.boardPaper;
 		ctx.fillRect(0, 0, m.cssW, m.cssH);
 
-		function sx(wx) { return halfW + (wx - ui.cam.x) * sc; }
-		function sy(wy) { return halfH + (wy - ui.cam.y) * sc; }
-		var left = ui.cam.x - halfW / sc, right = ui.cam.x + halfW / sc;
-		var top = ui.cam.y - halfH / sc, bottom = ui.cam.y + halfH / sc;
+		function sx(wx) { return cx + (wx - ui.cam.x) * sc; }
+		function sy(wy) { return cy + (wy - ui.cam.y) * sc; }
+		var left = ui.cam.x - cx / sc, right = ui.cam.x + (m.cssW - cx) / sc;
+		var top = ui.cam.y - cy / sc, bottom = ui.cam.y + (m.cssH - cy) / sc;
 
 		/* A bounded field defines where the grid is drawn and where play stops. */
 		var b = s.bounds;
@@ -823,9 +840,66 @@
 		Array.prototype.forEach.call(els.difficultyOpts, function (btn) {
 			markOption(btn, btn.getAttribute('data-difficulty') === ui.difficulty);
 		});
-		Array.prototype.forEach.call(els.timeOpts, function (btn) {
-			markOption(btn, (parseInt(btn.getAttribute('data-time'), 10) || 0) === ui.timeLimit);
-		});
+		updateTimeUI();
+	}
+
+	/* The displayed value is the pending choice; the timer is only "on" when a
+	   numeric value is selected, otherwise the game runs without a limit. */
+	function updateTimeUI() {
+		if (!els.timeValue) return;
+		var unlimited = ui.timeLimit === 0;
+		els.timeValue.textContent = ui.timeIndex >= TIME_STEPS.length
+			? '∞'
+			: formatClock(TIME_STEPS[ui.timeIndex] * 1000);
+		els.timeStepper.classList.toggle('is-idle', unlimited);
+		els.timeNone.classList.toggle('is-active', unlimited);
+		els.timeNone.setAttribute('aria-pressed', unlimited ? 'true' : 'false');
+	}
+
+	function stepTime(dir) {
+		var next = clamp(ui.timeIndex + dir, 0, TIME_STEPS.length);
+		if (next === ui.timeIndex) {
+			/* at a boundary: turn on the value already shown, or stop */
+			if (ui.timeLimit === 0 && ui.timeIndex < TIME_STEPS.length) {
+				ui.timeLimit = TIME_STEPS[ui.timeIndex];
+			} else {
+				return;
+			}
+		} else {
+			ui.timeIndex = next;
+			ui.timeLimit = next >= TIME_STEPS.length ? 0 : TIME_STEPS[next];
+		}
+		saveSetting('dots:timeIndex', String(ui.timeIndex));
+		saveSetting('dots:time', String(ui.timeLimit));
+		applySettingsUI();
+		newGame();
+	}
+
+	function clearTimeLimit() {
+		if (ui.timeLimit === 0) return;
+		ui.timeLimit = 0;
+		saveSetting('dots:time', '0');
+		applySettingsUI();
+		newGame();
+	}
+
+	/* --------------------------------------------------------------- panel --- */
+
+	function applyPanelUI() {
+		document.body.classList.toggle('panel-hidden', ui.panelHidden);
+		if (!els.panelBtn) return;
+		els.panelBtn.setAttribute('aria-pressed', ui.panelHidden ? 'true' : 'false');
+		var label = ui.panelHidden ? 'Показать панель' : 'Скрыть панель';
+		els.panelBtn.setAttribute('aria-label', label);
+		els.panelBtn.setAttribute('title', label);
+	}
+
+	function togglePanel() {
+		ui.panelHidden = !ui.panelHidden;
+		applyPanelUI();
+		saveSetting('dots:panelHidden', ui.panelHidden ? '1' : '0');
+		clampCamera();
+		render();
 	}
 
 	function markOption(btn, on) {
@@ -1029,8 +1103,8 @@
 			else if (key === 'ArrowUp') c.y -= 1;
 			else if (key === 'ArrowDown') c.y += 1;
 			else if (key === 'Enter' || key === ' ' || key === 'Spacebar') { attemptPlace(c.x, c.y); }
-			else if (key === '+' || key === '=') { stepZoom(1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); }
-			else if (key === '-' || key === '_') { stepZoom(-1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); }
+			else if (key === '+' || key === '=') { stepZoom(1, viewCenterX(), ui.metrics.cssH / 2); }
+			else if (key === '-' || key === '_') { stepZoom(-1, viewCenterX(), ui.metrics.cssH / 2); }
 			else handled = false;
 			if (!handled) return;
 			evt.preventDefault();
@@ -1053,13 +1127,13 @@
 		els.themeBtn.addEventListener('click', toggleTheme);
 		els.rulesBtn.addEventListener('click', function () { els.rulesDialog.showModal(); });
 		els.zoomIn.addEventListener('click', function () {
-			stepZoom(1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); render(); updateZoomLabel();
+			stepZoom(1, viewCenterX(), ui.metrics.cssH / 2); render(); updateZoomLabel();
 		});
 		els.zoomOut.addEventListener('click', function () {
-			stepZoom(-1, ui.metrics.cssW / 2, ui.metrics.cssH / 2); render(); updateZoomLabel();
+			stepZoom(-1, viewCenterX(), ui.metrics.cssH / 2); render(); updateZoomLabel();
 		});
 		els.zoomReset.addEventListener('click', function () {
-			setZoomAtScreen(ui.metrics.cssW / 2, ui.metrics.cssH / 2, 1); render(); updateZoomLabel();
+			setZoomAtScreen(viewCenterX(), ui.metrics.cssH / 2, 1); render(); updateZoomLabel();
 		});
 		els.centerLast.addEventListener('click', centerOnLast);
 
@@ -1093,16 +1167,10 @@
 			});
 		});
 
-		Array.prototype.forEach.call(els.timeOpts, function (btn) {
-			btn.addEventListener('click', function () {
-				var next = parseInt(btn.getAttribute('data-time'), 10) || 0;
-				if (next === ui.timeLimit) return;
-				ui.timeLimit = next;
-				applySettingsUI();
-				saveSetting('dots:time', String(next));
-				newGame();
-			});
-		});
+		els.timeDown.addEventListener('click', function () { stepTime(-1); });
+		els.timeUp.addEventListener('click', function () { stepTime(1); });
+		els.timeNone.addEventListener('click', clearTimeLimit);
+		els.panelBtn.addEventListener('click', togglePanel);
 
 		els.confirmOk.addEventListener('click', function () {
 			var cb = confirmCallback;
@@ -1139,7 +1207,7 @@
 			ui.cursor.y = clamp(ui.cursor.y, b.y0, b.y1);
 		}
 		var sc = scale();
-		var halfW = ui.metrics.cssW / 2 / sc;
+		var halfW = (ui.metrics.cssW - panelInsetX()) / 2 / sc;
 		var halfH = ui.metrics.cssH / 2 / sc;
 		var marginX = halfW * 0.72, marginY = halfH * 0.72;
 		if (ui.cursor.x < ui.cam.x - marginX) ui.cam.x = ui.cursor.x + marginX;
@@ -1216,7 +1284,13 @@
 		els.modeOpts = document.querySelectorAll('[data-mode]');
 		els.sizeOpts = document.querySelectorAll('[data-size]');
 		els.difficultyOpts = document.querySelectorAll('[data-difficulty]');
-		els.timeOpts = document.querySelectorAll('[data-time]');
+		els.timeStepper = $('timeStepper');
+		els.timeValue = $('timeValue');
+		els.timeDown = $('timeDown');
+		els.timeUp = $('timeUp');
+		els.timeNone = $('timeNone');
+		els.panel = document.querySelector('.panel');
+		els.panelBtn = $('panelBtn');
 		els.difficultySetting = $('difficultySetting');
 		els.timeLeft = $('timeLeft');
 		els.timeSep = $('timeSep');
@@ -1228,7 +1302,15 @@
 		ui.size = FIELD_SIZES.hasOwnProperty(size) ? size : 'infinite';
 		var diff = loadSetting('dots:difficulty', 'medium');
 		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
+		var storedIndex = parseInt(loadSetting('dots:timeIndex', '0'), 10);
+		ui.timeIndex = isNaN(storedIndex) ? 0 : clamp(storedIndex, 0, TIME_STEPS.length);
 		ui.timeLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);
+		if (ui.timeLimit > 0) {
+			var ti = TIME_STEPS.indexOf(ui.timeLimit);
+			if (ti >= 0) ui.timeIndex = ti; else ui.timeLimit = 0;
+		}
+		ui.panelHidden = loadSetting('dots:panelHidden', '0') === '1';
+		applyPanelUI();
 		applySettingsUI();
 		newGame();
 		bindEvents();

@@ -261,7 +261,9 @@ kbd {
 	border: 1px solid var(--line);
 	border-radius: var(--radius-md);
 	box-shadow: var(--shadow-md);
+	transition: right var(--dur) var(--ease);
 }
+body.panel-hidden .board__tools { right: 14px; }
 .tool__sep {
 	display: block;
 	height: 1px;
@@ -314,7 +316,9 @@ kbd {
 	-webkit-backdrop-filter: blur(18px) saturate(1.1);
 	backdrop-filter: blur(18px) saturate(1.1);
 	border-left: 1px solid var(--line);
+	transition: transform var(--dur) var(--ease);
 }
+body.panel-hidden .panel { transform: translateX(100%); }
 
 /* --------------------------------------------------------------- buttons --- */
 
@@ -475,8 +479,40 @@ kbd {
 }
 .segmented--3 { grid-template-columns: repeat(3, 1fr); }
 .segmented--3 .segmented__opt { padding: 0 6px; font-size: 12.5px; }
-.segmented--wrap { display: flex; flex-wrap: wrap; }
-.segmented--wrap .segmented__opt { flex: 1 1 auto; min-width: 58px; padding: 0 8px; font-size: 12.5px; }
+
+/* time picker */
+.stepper { display: flex; align-items: center; gap: 6px; }
+.stepper__btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 40px;
+	height: 40px;
+	padding: 0;
+	border: 1px solid var(--line-strong);
+	border-radius: var(--radius-md);
+	background: var(--surface);
+	color: var(--ink-2);
+	cursor: pointer;
+	transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.stepper__btn:hover { background: var(--surface-2); color: var(--ink); }
+.stepper__btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.stepper__btn .icon { width: 18px; height: 18px; }
+.stepper__value {
+	flex: 1;
+	text-align: center;
+	font-size: 18px;
+	font-weight: 800;
+	letter-spacing: -0.02em;
+	font-variant-numeric: tabular-nums;
+	color: var(--ink);
+}
+.stepper.is-idle .stepper__value { color: var(--ink-3); opacity: 0.55; font-weight: 600; }
+
+.btn--toggle { background: var(--surface); color: var(--ink-2); border-color: var(--line-strong); min-height: 38px; }
+.btn--toggle:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
+.btn--toggle.is-active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .segmented__opt {
 	min-height: 36px;
 	padding: 0 10px;
@@ -587,6 +623,8 @@ kbd {
 		border-top: 1px solid var(--line);
 		border-radius: var(--radius-xl) var(--radius-xl) 0 0;
 	}
+	body.panel-hidden .panel { transform: translateY(100%); }
+	body.panel-hidden .board__tools { right: 14px; }
 	.board__tools {
 		left: auto;
 		right: 14px;
