@@ -190,12 +190,15 @@ kbd {
 	gap: 8px;
 	flex-wrap: wrap;
 }
+.panel__status[hidden],
+.score[hidden],
+.settings[hidden] { display: none; }
 
 .brand { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .brand__mark { display: flex; flex: none; }
 .brand__mark svg { display: block; }
 .brand__text { display: flex; flex-direction: column; min-width: 0; }
-.brand__title { font-size: 34px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; }
+.brand__title { font-size: 24px; font-weight: 800; letter-spacing: -0.03em; line-height: 1.05; }
 
 /* ----------------------------------------------------------------- turn --- */
 
@@ -466,7 +469,6 @@ body.panel-hidden .panel { transform: translateX(100%); }
 	letter-spacing: 0.06em;
 	color: var(--ink-3);
 }
-.settings button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .segmented {
 	display: grid;
@@ -565,7 +567,7 @@ body.panel-hidden .panel { transform: translateX(100%); }
 .dialog__title--center { text-align: center; margin-top: 14px; }
 .dialog__lead { margin-top: 8px; text-align: center; color: var(--ink-2); font-size: 14.5px; }
 .dialog__body { max-height: min(62vh, 520px); overflow-y: auto; padding-right: 4px; }
-.dialog__actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
+.dialog__actions { display: flex; justify-content: center; gap: 10px; margin-top: 20px; }
 .dialog__result { display: flex; flex-direction: column; align-items: center; }
 
 .result__badge {

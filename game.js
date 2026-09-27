@@ -791,7 +791,7 @@
 		els.canvas.classList.toggle('is-locked', isLocked());
 		updateZoomLabel();
 		updateTimerLabel();
-		applySettingsLock();
+		applyPanelVisibility();
 	}
 
 	/* ----------------------------------------------------------------- bot --- */
@@ -899,17 +899,17 @@
 		updateTimeUI();
 	}
 
-	function settingsLocked() {
-		return ui.state.moveCount > 0 && !ui.ended;
-	}
-
-	/* Setup controls are frozen while a game is in progress. */
-	function applySettingsLock() {
-		var locked = settingsLocked();
-		Array.prototype.forEach.call(els.settingsControls, function (el) {
-			el.disabled = locked;
-		});
-		if (els.timeStepper) els.timeStepper.classList.toggle('is-locked', locked);
+	/*
+	 * The board area (turn + score) appears once the game has started, and the
+	 * setup block is shown only when no game is in progress — before the start
+	 * and after the end.
+	 */
+	function applyPanelVisibility() {
+		var started = ui.state.moveCount > 0;
+		var inProgress = started && !ui.ended;
+		if (els.panelStatus) els.panelStatus.hidden = !started;
+		if (els.scoreEl) els.scoreEl.hidden = !started;
+		if (els.settingsEl) els.settingsEl.hidden = inProgress;
 	}
 
 	/* The displayed value is the pending choice; the timer is only "on" when a
@@ -1358,7 +1358,9 @@
 		els.timeNone = $('timeNone');
 		els.panel = document.querySelector('.panel');
 		els.panelBtn = $('panelBtn');
-		els.settingsControls = document.querySelectorAll('.settings button');
+		els.settingsEl = document.querySelector('.settings');
+		els.scoreEl = document.querySelector('.score');
+		els.panelStatus = document.querySelector('.panel__status');
 		els.difficultySetting = $('difficultySetting');
 		els.timeLeft = $('timeLeft');
 		els.timeSep = $('timeSep');
