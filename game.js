@@ -44,6 +44,14 @@
 		hard: { timeBudget: 9000, maxDepth: 14, maxMoves: 32, rootLimit: 96, tacticalScan: 1, captureScan: 64, blunder: 0 }
 	};
 
+	/*
+	 * After this many computer moves it stops always playing the single best
+	 * move and picks at random among the top few, so it does not corner the
+	 * player.
+	 */
+	var MERCY_AFTER = 10;
+	var MERCY_CHOICES = 3;
+
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 
 	var BADGE_TROPHY =
@@ -76,6 +84,7 @@
 		botWorkerFailed: false,
 		botPending: null,
 		botRequestId: 0,
+		botMoves: 0,
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
 		hover: null,
@@ -676,6 +685,7 @@
 		var player = ui.state.turn;
 		var res = E.place(ui.state, x, y);
 		if (!res.ok) { ui.history.pop(); return; }
+		if (ui.mode === 'bot' && res.player === 2) ui.botMoves += 1;
 		ui.hover = null;
 		ui.cursor.x = x; ui.cursor.y = y;
 		extendScene(res.player, res.claimed);
@@ -756,6 +766,7 @@
 		ui.ended = false;
 		ui.thinking = false;
 		ui.botRequestId += 1;
+		ui.botMoves = 0;
 		ui.hover = null;
 		ui.flash = null;
 		ui.keyboard = false;
@@ -870,8 +881,11 @@
 			'var d=ev.data||{};' +
 			'var s={dots:new Map(d.dots),claimed:new Map(d.claimed),turn:d.turn,score:d.score,' +
 			'rules:d.rules,bounds:d.bounds||null,lastMove:d.lastMove||null,moveCount:d.moveCount};' +
-			'var m=null;try{m=self.DotsEngine.bestMove(s,d.player,d.options);}catch(err){m=null;}' +
-			'self.postMessage({id:d.id,move:m});};';
+			'var m=[];try{' +
+			'if((d.count||1)<=1){var b=self.DotsEngine.bestMove(s,d.player,d.options);m=b?[b]:[];}' +
+			'else{m=self.DotsEngine.bestMoves(s,d.player,d.options,d.count)||[];}' +
+			'}catch(err){m=[];}' +
+			'self.postMessage({id:d.id,moves:m});};';
 	}
 
 	function stopBotWorker() {
@@ -886,7 +900,7 @@
 			var msg = ev.data || {};
 			if (msg.id !== ui.botRequestId) return; /* stale request */
 			ui.botPending = null;
-			finishBotMove(msg.move);
+			finishBotMove(pickFromMoves(msg.moves));
 		};
 		w.onerror = function () {
 			/* this worker could not run; drop it and try the next option */
@@ -899,7 +913,9 @@
 			} else {
 				ui.botWorkerFailed = true;
 				var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
-				finishBotMove(E.bestMove(ui.state, 2, preset));
+				var n = botMoveCount();
+				if (n <= 1) finishBotMove(E.bestMove(ui.state, 2, preset));
+				else finishBotMove(pickFromMoves(E.bestMoves(ui.state, 2, preset, n)));
 			}
 		};
 	}
@@ -935,6 +951,16 @@
 		return startBotWorker();
 	}
 
+	/* How many of the best moves the computer may choose from. */
+	function botMoveCount() {
+		return (ui.mode === 'bot' && ui.botMoves >= MERCY_AFTER) ? MERCY_CHOICES : 1;
+	}
+
+	function pickFromMoves(list) {
+		if (!list || !list.length) return null;
+		return list[(Math.random() * list.length) | 0];
+	}
+
 	function finishBotMove(move) {
 		ui.thinking = false;
 		if (ui.mode !== 'bot' || ui.ended || ui.state.turn !== 2) { render(); updatePanel(); return; }
@@ -951,6 +977,7 @@
 			tacticalScan: preset.tacticalScan,
 			captureScan: preset.captureScan
 		};
+		var count = botMoveCount();
 		ui.botRequestId += 1;
 		var s = ui.state;
 		ui.botPending = {
@@ -964,6 +991,7 @@
 			lastMove: s.lastMove,
 			moveCount: s.moveCount,
 			player: 2,
+			count: count,
 			options: options
 		};
 		var worker = ensureBotWorker();
@@ -972,7 +1000,8 @@
 			return;
 		}
 		/* no worker available: search on the main thread */
-		finishBotMove(E.bestMove(ui.state, 2, options));
+		if (count <= 1) finishBotMove(E.bestMove(ui.state, 2, options));
+		else finishBotMove(pickFromMoves(E.bestMoves(ui.state, 2, options, count)));
 	}
 
 	function scheduleBot() {

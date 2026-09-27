@@ -20,11 +20,16 @@ self.onmessage = function (ev) {
 		lastMove: d.lastMove || null,
 		moveCount: d.moveCount
 	};
-	var move = null;
+	var moves = [];
 	try {
-		move = self.DotsEngine.bestMove(state, d.player, d.options);
+		if ((d.count || 1) <= 1) {
+			var best = self.DotsEngine.bestMove(state, d.player, d.options);
+			moves = best ? [best] : [];
+		} else {
+			moves = self.DotsEngine.bestMoves(state, d.player, d.options, d.count) || [];
+		}
 	} catch (err) {
-		move = null;
+		moves = [];
 	}
-	self.postMessage({ id: d.id, move: move });
+	self.postMessage({ id: d.id, moves: moves });
 };

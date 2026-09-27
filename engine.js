@@ -584,6 +584,82 @@
 		return best;
 	}
 
+	/*
+	 * Like bestMove, but returns the top `count` root moves ranked by score
+	 * (highest first). The root is searched with a full window so the scores of
+	 * the alternatives are comparable, not just cut off. Used to pick a random
+	 * move among the best few.
+	 */
+	function bestMoves(state, player, options, count) {
+		options = options || {};
+		count = Math.max(1, count || 1);
+		var timeBudget = options.timeBudget || 800;
+		var maxDepth = options.maxDepth || 6;
+		var ctx = {
+			nodes: 0,
+			deadline: now() + timeBudget,
+			maxMoves: options.maxMoves || 14,
+			testCap: options.testCap || 400,
+			rootLimit: options.rootLimit || 40,
+			tacticalScan: options.tacticalScan || 0,
+			captureScan: options.captureScan || 0,
+			ai: player,
+			history: Object.create(null),
+			killer: []
+		};
+
+		var moves = rootMoves(state, ctx);
+		if (!moves.length) {
+			if (state.dots.size) return [];
+			if (state.bounds) {
+				return [{
+					x: Math.floor((state.bounds.x0 + state.bounds.x1) / 2),
+					y: Math.floor((state.bounds.y0 + state.bounds.y1) / 2)
+				}];
+			}
+			return [{ x: 0, y: 0 }];
+		}
+
+		var ranked = [];
+		var stop = false;
+		for (var depth = 2; depth <= maxDepth && !stop; depth++) {
+			var scores = new Array(moves.length);
+			for (var i = 0; i < moves.length; i++) {
+				var mv = moves[i];
+				var log = applyMove(state, mv.x, mv.y);
+				if (!log.ok) { scores[i] = -Infinity; continue; }
+				var capture = log.capturedCount > 0;
+				var childDepth = capture ? depth : depth - 1;
+				var v;
+				try {
+					v = search(state, childDepth, -Infinity, Infinity, ctx, 1, capture ? 2 : 3);
+				} catch (e) {
+					if (e === TIMEOUT) { stop = true; }
+					else throw e;
+				} finally {
+					undoMove(state, log);
+				}
+				if (stop) break;
+				scores[i] = v;
+				if (now() > ctx.deadline) { stop = true; break; }
+			}
+			if (stop) break;
+			ranked = moves.map(function (m, idx) { return { x: m.x, y: m.y, score: scores[idx] }; });
+			ranked.sort(function (a, b) { return b.score - a.score; });
+			/* carry the ranking into the next, deeper iteration */
+			var order = Object.create(null);
+			ranked.forEach(function (r, idx) { order[r.x + ',' + r.y] = idx; });
+			moves.sort(function (a, b) {
+				return (order[a.x + ',' + a.y] || 0) - (order[b.x + ',' + b.y] || 0);
+			});
+		}
+
+		if (!ranked.length) {
+			ranked = moves.slice(0, count).map(function (m) { return { x: m.x, y: m.y, score: m.s }; });
+		}
+		return ranked.slice(0, count);
+	}
+
 	var api = {
 		EMPTY: EMPTY, P1: P1, P2: P2, C1: C1, C2: C2,
 		key: key,
@@ -604,7 +680,8 @@
 		prisonerCount: prisonerCount,
 		isGameOver: isGameOver,
 		evaluate: evaluate,
-		bestMove: bestMove
+		bestMove: bestMove,
+		bestMoves: bestMoves
 	};
 
 	root.DotsEngine = api;
