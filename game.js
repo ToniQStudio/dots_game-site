@@ -80,8 +80,8 @@
 		timeIndex: 0,
 		deadline: null,
 		clockTimer: null,
-		thinkTimer: null,
-		thinkStart: 0,
+		turnTimer: null,
+		turnStart: 0,
 		panelHidden: false,
 		botWorker: null,
 		botWorkerUrl: null,
@@ -962,6 +962,7 @@
 		   broken instead of running forever; any capture resets the count. */
 		if (res.capturedCount > 0) ui.botQuiet = 0;
 		else if (ui.mode === 'bot' && res.player === 2) ui.botQuiet += 1;
+		beginTurn();
 		ui.hover = null;
 		ui.cursor.x = x; ui.cursor.y = y;
 		extendScene(res.player, res.claimed);
@@ -1013,34 +1014,39 @@
 	}
 
 	/*
-	 * A tiny seconds counter in the turn badge, shown only while the computer
-	 * is thinking, so the wait is visible rather than silent.
+	 * A tiny seconds counter in the turn badge. It measures how long the side
+	 * currently on the clock has been thinking and resets every move, so the
+	 * wait is visible for both the human and the computer.
 	 */
-	function stopThinkTimer() {
-		if (ui.thinkTimer) { window.clearInterval(ui.thinkTimer); ui.thinkTimer = null; }
+	function stopTurnTimer() {
+		if (ui.turnTimer) { window.clearInterval(ui.turnTimer); ui.turnTimer = null; }
 	}
 
-	function syncThinkTimer() {
+	/* Called whenever the turn passes to the other side. */
+	function beginTurn() {
+		ui.turnStart = nowMs();
+	}
+
+	function tickTurnTimer() {
 		if (!els.turnClock) return;
-		var show = ui.mode === 'bot' && ui.thinking && !ui.ended;
-		if (!show) {
+		if (!ui.started || ui.ended) {
 			els.turnClock.hidden = true;
-			stopThinkTimer();
+			stopTurnTimer();
 			return;
 		}
 		els.turnClock.hidden = false;
-		if (!ui.thinkTimer) {
-			ui.thinkStart = nowMs();
-			els.turnClock.textContent = '0 с';
-			ui.thinkTimer = window.setInterval(function () {
-				if (!ui.thinking || ui.ended) {
-					stopThinkTimer();
-					if (els.turnClock) els.turnClock.hidden = true;
-					return;
-				}
-				els.turnClock.textContent = Math.floor((nowMs() - ui.thinkStart) / 1000) + ' с';
-			}, 200);
+		els.turnClock.textContent = Math.floor((nowMs() - ui.turnStart) / 1000) + ' с';
+	}
+
+	function syncTurnTimer() {
+		if (!els.turnClock) return;
+		if (!ui.started || ui.ended) {
+			els.turnClock.hidden = true;
+			stopTurnTimer();
+			return;
 		}
+		if (!ui.turnTimer) ui.turnTimer = window.setInterval(tickTurnTimer, 200);
+		tickTurnTimer();
 	}
 
 	/* The clock starts on the first move, so choosing the setting is not timed. */
@@ -1082,6 +1088,8 @@
 		ui.scene = { edges: [] };
 		ui.deadline = null;
 		stopClock();
+		stopTurnTimer();
+		beginTurn();
 		var b = ui.state.bounds;
 		ui.cursor.x = b ? Math.floor((b.x0 + b.x1) / 2) : 0;
 		ui.cursor.y = b ? Math.floor((b.y0 + b.y1) / 2) : 0;
@@ -1100,6 +1108,7 @@
 		newGame();
 		ui.started = true;
 		if (ui.mode === 'bot' && ui.first === 'bot') ui.state.turn = 2;
+		beginTurn();
 		render();
 		updatePanel();
 		if (ui.mode === 'bot' && ui.first === 'bot') scheduleBot();
@@ -1121,17 +1130,9 @@
 		els.card2.classList.toggle('is-active', active === 2);
 
 		els.turn.setAttribute('data-player', String(s.turn));
-		if (ui.ended) {
-			els.turn.classList.remove('is-thinking');
-			els.turnText.textContent = 'Партия завершена';
-		} else if (ui.thinking) {
-			els.turn.classList.add('is-thinking');
-			els.turnText.textContent = NAMES[s.turn] + ' думают';
-		} else {
-			els.turn.classList.remove('is-thinking');
-			els.turnText.textContent = 'Ход: ' + NAMES[s.turn];
-		}
-		syncThinkTimer();
+		els.turn.classList.toggle('is-thinking', !ui.ended && !!ui.thinking);
+		els.turnText.textContent = ui.ended ? 'Партия завершена' : NAMES[s.turn] + ' думают';
+		syncTurnTimer();
 
 		var bot = ui.mode === 'bot';
 		els.difficultySetting.hidden = !bot;
@@ -1378,6 +1379,7 @@
 		}
 		ui.ended = false;
 		ui.hover = null;
+		beginTurn();
 		render();
 		updatePanel();
 	}
