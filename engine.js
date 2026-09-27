@@ -455,9 +455,17 @@
 		return out;
 	}
 
-	function search(state, depth, alpha, beta, ctx, ply, ext) {
+	/*
+	 * Alpha-beta search written as a generator so it can be paused between
+	 * slices of work (yield) and keep the page responsive even without a web
+	 * worker. `bestMove` drives it to completion in one go.
+	 */
+	function* searchGen(state, depth, alpha, beta, ctx, ply, ext) {
 		ctx.nodes++;
-		if ((ctx.nodes & 255) === 0 && now() > ctx.deadline) throw TIMEOUT;
+		if ((ctx.nodes & 255) === 0) {
+			if (now() > ctx.deadline) throw TIMEOUT;
+			yield;
+		}
 		if (depth <= 0) return evaluate(state, ctx.ai);
 
 		var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
@@ -478,7 +486,7 @@
 
 			var v;
 			try {
-				v = search(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+				v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
 			} finally {
 				undoMove(state, log);
 			}
@@ -508,7 +516,7 @@
 	 * a soft cap in milliseconds; `maxDepth` and `maxMoves` bound the search so
 	 * the main thread is never blocked for long.
 	 */
-	function bestMove(state, player, options) {
+	function* bestMoveGen(state, player, options) {
 		options = options || {};
 		var timeBudget = options.timeBudget || 800;
 		var maxDepth = options.maxDepth || 6;
@@ -555,7 +563,7 @@
 				var childDepth = capture ? depth : depth - 1;
 				var v;
 				try {
-					v = search(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+					v = yield* searchGen(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
 				} catch (e) {
 					if (e === TIMEOUT) { timedOut = true; break; }
 					throw e;
@@ -584,13 +592,21 @@
 		return best;
 	}
 
+	/* Synchronous wrapper: drives the generator to completion. */
+	function bestMove(state, player, options) {
+		var it = bestMoveGen(state, player, options);
+		var step = it.next();
+		while (!step.done) step = it.next();
+		return step.value;
+	}
+
 	/*
 	 * Like bestMove, but returns the top `count` root moves ranked by score
 	 * (highest first). The root is searched with a full window so the scores of
 	 * the alternatives are comparable, not just cut off. Used to pick a random
 	 * move among the best few.
 	 */
-	function bestMoves(state, player, options, count) {
+	function* bestMovesGen(state, player, options, count) {
 		options = options || {};
 		count = Math.max(1, count || 1);
 		var timeBudget = options.timeBudget || 800;
@@ -632,7 +648,7 @@
 				var childDepth = capture ? depth : depth - 1;
 				var v;
 				try {
-					v = search(state, childDepth, -Infinity, Infinity, ctx, 1, capture ? 2 : 3);
+					v = yield* searchGen(state, childDepth, -Infinity, Infinity, ctx, 1, capture ? 2 : 3);
 				} catch (e) {
 					if (e === TIMEOUT) { stop = true; }
 					else throw e;
@@ -660,6 +676,14 @@
 		return ranked.slice(0, count);
 	}
 
+	/* Synchronous wrapper: drives the generator to completion. */
+	function bestMoves(state, player, options, count) {
+		var it = bestMovesGen(state, player, options, count);
+		var step = it.next();
+		while (!step.done) step = it.next();
+		return step.value;
+	}
+
 	var api = {
 		EMPTY: EMPTY, P1: P1, P2: P2, C1: C1, C2: C2,
 		key: key,
@@ -681,7 +705,9 @@
 		isGameOver: isGameOver,
 		evaluate: evaluate,
 		bestMove: bestMove,
-		bestMoves: bestMoves
+		bestMoves: bestMoves,
+		bestMoveGen: bestMoveGen,
+		bestMovesGen: bestMovesGen
 	};
 
 	root.DotsEngine = api;

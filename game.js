@@ -900,7 +900,7 @@
 			var msg = ev.data || {};
 			if (msg.id !== ui.botRequestId) return; /* stale request */
 			ui.botPending = null;
-			finishBotMove(pickFromMoves(msg.moves));
+			finishBotMove(chooseBotMove(msg.moves));
 		};
 		w.onerror = function () {
 			/* this worker could not run; drop it and try the next option */
@@ -912,10 +912,7 @@
 				if (ui.botPending) spawned.w.postMessage(ui.botPending);
 			} else {
 				ui.botWorkerFailed = true;
-				var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
-				var n = botMoveCount();
-				if (n <= 1) finishBotMove(E.bestMove(ui.state, 2, preset));
-				else finishBotMove(pickFromMoves(E.bestMoves(ui.state, 2, preset, n)));
+				runBotSearchCooperative(DIFFICULTY[ui.difficulty] || DIFFICULTY.medium, botMoveCount());
 			}
 		};
 	}
@@ -956,9 +953,56 @@
 		return (ui.mode === 'bot' && ui.botMoves >= MERCY_AFTER) ? MERCY_CHOICES : 1;
 	}
 
-	function pickFromMoves(list) {
+	/* How many placements the human would have left after this computer move. */
+	function humanOptionsAfter(move) {
+		if (!move) return 0;
+		var s = E.clone(ui.state);
+		s.turn = 2;
+		var log = E.applyMove(s, move.x, move.y);
+		if (!log.ok) return 0;
+		s.turn = 1;
+		var x0, y0, x1, y1;
+		if (s.bounds) {
+			x0 = s.bounds.x0; y0 = s.bounds.y0; x1 = s.bounds.x1; y1 = s.bounds.y1;
+		} else {
+			var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+			function acc(x, y) {
+				if (x < minX) minX = x; if (x > maxX) maxX = x;
+				if (y < minY) minY = y; if (y > maxY) maxY = y;
+			}
+			s.dots.forEach(function (v, k) { var p = E.parseKey(k); acc(p[0], p[1]); });
+			s.claimed.forEach(function (v, k) { var p = E.parseKey(k); acc(p[0], p[1]); });
+			x0 = minX - 1; y0 = minY - 1; x1 = maxX + 1; y1 = maxY + 1;
+		}
+		var count = 0;
+		for (var y = y0; y <= y1; y++) {
+			for (var x = x0; x <= x1; x++) {
+				if (E.canPlace(s, x, y)) { count += 1; if (count > 1) return count; }
+			}
+		}
+		return count;
+	}
+
+	/*
+	 * Play the best move, unless it would leave the human boxed in with a
+	 * single placement — then take one of the other good moves instead.
+	 */
+	function chooseBotMove(list) {
 		if (!list || !list.length) return null;
-		return list[(Math.random() * list.length) | 0];
+		if (list.length === 1) return list[0];
+		var best = list[0];
+		if (humanOptionsAfter(best) > 1) return best;
+		var safe = [];
+		for (var i = 0; i < list.length; i++) {
+			if (humanOptionsAfter(list[i]) > 1) safe.push(list[i]);
+		}
+		if (safe.length) return safe[(Math.random() * safe.length) | 0];
+		var bestCount = -1, bestMove = list[0];
+		for (var j = 0; j < list.length; j++) {
+			var c = humanOptionsAfter(list[j]);
+			if (c > bestCount) { bestCount = c; bestMove = list[j]; }
+		}
+		return bestMove;
 	}
 
 	function finishBotMove(move) {
@@ -999,9 +1043,49 @@
 			worker.postMessage(ui.botPending);
 			return;
 		}
-		/* no worker available: search on the main thread */
-		if (count <= 1) finishBotMove(E.bestMove(ui.state, 2, options));
-		else finishBotMove(pickFromMoves(E.bestMoves(ui.state, 2, options, count)));
+		/* no worker available: cooperative search on the main thread (yields) */
+		runBotSearchCooperative(preset, count);
+	}
+
+	/*
+	 * Runs the search on the main thread but lets the browser breathe between
+	 * slices, so panning and zooming keep working even without a web worker.
+	 * It searches a clone, so the live board stays untouched while it thinks.
+	 */
+	function runBotSearchCooperative(preset, count) {
+		var options = {
+			timeBudget: preset.timeBudget,
+			maxDepth: preset.maxDepth,
+			maxMoves: preset.maxMoves,
+			rootLimit: preset.rootLimit,
+			tacticalScan: preset.tacticalScan,
+			captureScan: preset.captureScan
+		};
+		var clone = E.clone(ui.state);
+		var gen = (count <= 1) ? E.bestMoveGen(clone, 2, options) : E.bestMovesGen(clone, 2, options, count);
+		var reqId = ui.botRequestId;
+		function done(res) {
+			var value = res.value;
+			var list = (count <= 1) ? (value ? [value] : []) : (value || []);
+			finishBotMove(chooseBotMove(list));
+		}
+		/* Hidden tab: nobody needs the UI to breathe, and throttled timers
+		   would drag the search out — run it straight through. */
+		if (document.hidden) {
+			var r;
+			do { r = gen.next(); } while (!r.done);
+			if (reqId === ui.botRequestId && !ui.ended && ui.mode === 'bot') done(r);
+			return;
+		}
+		function slice() {
+			if (reqId !== ui.botRequestId || ui.ended || ui.mode !== 'bot') return;
+			var end = nowMs() + 20;
+			var res;
+			do { res = gen.next(); } while (!res.done && nowMs() < end);
+			if (!res.done) { window.setTimeout(slice, 0); return; }
+			done(res);
+		}
+		window.setTimeout(slice, 0);
 	}
 
 	function scheduleBot() {
