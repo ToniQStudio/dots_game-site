@@ -843,9 +843,9 @@
 		ctx.lineWidth = Math.max(1.05, sc * 0.077);
 		for (var i = 0; i < ui.scene.edges.length; i++) {
 			var e = ui.scene.edges[i];
-			/* A fortress outline is drawn in the muted colour of the side it
-			   enclosed: blue enclosing red draws dark red, and vice versa. */
-			ctx.strokeStyle = e.owner === 1 ? pal.p2Captured : pal.p1Captured;
+			/* A fortress outline matches the dots of its own side: blue lines
+			   are as blue as blue dots, red lines as red as red dots. */
+			ctx.strokeStyle = e.owner === 1 ? pal.p1 : pal.p2;
 			ctx.beginPath();
 			ctx.moveTo(sx(e.ax), sy(e.ay));
 			ctx.lineTo(sx(e.bx), sy(e.by));
