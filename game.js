@@ -349,6 +349,10 @@
 		var cands = outlineCandidates(state, owner, touch);
 		if (!cands.length) return;
 
+		/* every dot of the owner, so the closing pass can reach any neighbour */
+		var ownerDots = new Set();
+		state.dots.forEach(function (v, k) { if (v === owner) ownerDots.add(k); });
+
 		var used = new Set();
 		var deg = new Map();
 		var adj = new Map();
@@ -428,27 +432,35 @@
 
 		/*
 		 * Finally close every open end. A dot left with a single segment would
-		 * be a line sticking out into nothing, so it is linked to a neighbour —
-		 * even past the usual cap if that is the only way, which can make a
-		 * four-way junction. This is what keeps every contour a closed loop.
+		 * be a line sticking out into nothing, so it is linked to an adjacent
+		 * dot of the same owner — a border candidate when possible, otherwise
+		 * any neighbour, even past the usual cap (which can make a four-way
+		 * junction). This is what keeps every contour a closed loop.
 		 */
 		var guard = 0, progress = true;
-		while (progress && guard++ < 2000) {
+		while (progress && guard++ < 4000) {
 			progress = false;
 			for (var q = 0; q < order.length; q++) {
 				var end = order[q];
 				if ((deg.get(end) || 0) !== 1) continue;
-				var list = neighbors.get(end);
+				var pe = E.parseKey(end);
 				var best = null, bestRank = 99;
-				for (var n = 0; n < list.length; n++) {
-					var cand = list[n].k;
-					var ekc = edgeKey(end, cand);
-					if (used.has(ekc)) continue;
-					if (cutsCorner(end, cand, adj)) continue;
-					var cd = deg.get(cand) || 0;
-					if (cd === 0 || cd >= 4) continue;
-					var rank = (cd === 1 ? 0 : (cd === 2 ? 1 : 2)) + (list[n].ortho ? 0 : 0.5);
-					if (rank < bestRank) { bestRank = rank; best = cand; }
+				for (var ddx = -1; ddx <= 1; ddx++) {
+					for (var ddy = -1; ddy <= 1; ddy++) {
+						if (!ddx && !ddy) continue;
+						var nk = E.key(pe[0] + ddx, pe[1] + ddy);
+						if (!ownerDots.has(nk)) continue;
+						var ekc = edgeKey(end, nk);
+						if (used.has(ekc)) continue;
+						if (cutsCorner(end, nk, adj)) continue;
+						var cd = deg.get(nk) || 0;
+						if (cd >= 4) continue;
+						var isCand = candSeen.has(ekc);
+						var ortho = (ddx === 0 || ddy === 0);
+						var rank = (cd === 1 ? 0 : (cd === 2 ? 1 : (cd === 3 ? 2 : 4))) +
+							(ortho ? 0 : 0.5) + (isCand ? 0 : 1.5);
+						if (rank < bestRank) { bestRank = rank; best = nk; }
+					}
 				}
 				if (best === null) continue;
 				var be = edgeKey(end, best);
