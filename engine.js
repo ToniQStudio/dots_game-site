@@ -557,9 +557,23 @@
 			var childDepth = (capture && ext > 0) ? depth : depth - 1;
 			var childExt = (capture && ext > 0) ? ext - 1 : ext;
 
+			/* late-move reductions: quiet moves far down the list get a
+			   shallower/null-window search, re-searched only if they improve */
+			var reduce = (ctx.lmr !== false && !capture && depth >= 3 && searched >= 3)
+				? (searched >= 8 && depth >= 6 ? 2 : 1) : 0;
+			var searchDepth = Math.max(1, childDepth - reduce);
+
 			var v;
 			try {
-				if (searched === 0 || !ctx.pvs) {
+				if (reduce > 0) {
+					if (maximizing) {
+						v = yield* searchGen(state, searchDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+						if (v > alpha) v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+					} else {
+						v = yield* searchGen(state, searchDepth, beta - 1, beta, ctx, ply + 1, childExt);
+						if (v < beta) v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+					}
+				} else if (searched === 0 || !ctx.pvs) {
 					v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
 				} else if (maximizing) {
 					v = yield* searchGen(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
