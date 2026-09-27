@@ -80,6 +80,8 @@
 		timeIndex: 0,
 		deadline: null,
 		clockTimer: null,
+		thinkTimer: null,
+		thinkStart: 0,
 		panelHidden: false,
 		botWorker: null,
 		botWorkerUrl: null,
@@ -1010,6 +1012,37 @@
 		if (ui.clockTimer) { window.clearInterval(ui.clockTimer); ui.clockTimer = null; }
 	}
 
+	/*
+	 * A tiny seconds counter in the turn badge, shown only while the computer
+	 * is thinking, so the wait is visible rather than silent.
+	 */
+	function stopThinkTimer() {
+		if (ui.thinkTimer) { window.clearInterval(ui.thinkTimer); ui.thinkTimer = null; }
+	}
+
+	function syncThinkTimer() {
+		if (!els.turnClock) return;
+		var show = ui.mode === 'bot' && ui.thinking && !ui.ended;
+		if (!show) {
+			els.turnClock.hidden = true;
+			stopThinkTimer();
+			return;
+		}
+		els.turnClock.hidden = false;
+		if (!ui.thinkTimer) {
+			ui.thinkStart = nowMs();
+			els.turnClock.textContent = '0 с';
+			ui.thinkTimer = window.setInterval(function () {
+				if (!ui.thinking || ui.ended) {
+					stopThinkTimer();
+					if (els.turnClock) els.turnClock.hidden = true;
+					return;
+				}
+				els.turnClock.textContent = Math.floor((nowMs() - ui.thinkStart) / 1000) + ' с';
+			}, 200);
+		}
+	}
+
 	/* The clock starts on the first move, so choosing the setting is not timed. */
 	function startClock() {
 		stopClock();
@@ -1093,11 +1126,12 @@
 			els.turnText.textContent = 'Партия завершена';
 		} else if (ui.thinking) {
 			els.turn.classList.add('is-thinking');
-			els.turnText.textContent = NAMES[s.turn] + ' думают';
+			els.turnText.textContent = 'Компьютер думает';
 		} else {
 			els.turn.classList.remove('is-thinking');
 			els.turnText.textContent = 'Ход: ' + NAMES[s.turn];
 		}
+		syncThinkTimer();
 
 		var bot = ui.mode === 'bot';
 		els.difficultySetting.hidden = !bot;
@@ -1804,6 +1838,7 @@
 		els.canvas = $('board');
 		els.turn = $('turn');
 		els.turnText = $('turnText');
+		els.turnClock = $('turnClock');
 		els.dotCount = $('dotCount');
 		els.moveCount = $('moveCount');
 		els.card1 = $('card1');

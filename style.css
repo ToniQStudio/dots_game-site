@@ -229,6 +229,17 @@ kbd {
 .turn[data-player="2"] .turn__dot { background: var(--p2); box-shadow: 0 0 0 4px var(--p2-soft); }
 .turn.is-thinking .turn__dot { animation: pulse 1s ease-in-out infinite; }
 
+/* Tiny seconds counter shown while the computer is thinking. */
+.turn__clock {
+	font-size: 10px;
+	font-weight: 600;
+	color: var(--ink-3);
+	font-variant-numeric: tabular-nums;
+	min-width: 2.6em;
+	text-align: right;
+}
+.turn.is-thinking .turn__clock { color: var(--ink-2); }
+
 @keyframes pulse {
 	0%, 100% { transform: scale(1); opacity: 1; }
 	50% { transform: scale(1.35); opacity: 0.65; }
