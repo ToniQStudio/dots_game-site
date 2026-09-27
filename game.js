@@ -1317,7 +1317,12 @@
 		els.undoBtn.addEventListener('click', undo);
 		els.finishBtn.addEventListener('click', function () {
 			if (ui.ended || ui.state.moveCount === 0) return;
-			showResult(null, 'manual');
+			askConfirm({
+				title: 'Завершить партию?',
+				lead: 'Партия закончится, а победитель определится по числу пленных.',
+				okLabel: 'Завершить',
+				onOk: function () { showResult(null, 'manual'); }
+			});
 		});
 		els.resignBtn.addEventListener('click', requestResign);
 		els.themeBtn.addEventListener('click', toggleTheme);
