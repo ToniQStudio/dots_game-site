@@ -843,9 +843,19 @@
 		ctx.lineWidth = Math.max(1.05, sc * 0.077);
 		for (var i = 0; i < ui.scene.edges.length; i++) {
 			var e = ui.scene.edges[i];
-			/* A fortress outline matches the dots of its own side: blue lines
-			   are as blue as blue dots, red lines as red as red dots. */
-			ctx.strokeStyle = e.owner === 1 ? pal.p1 : pal.p2;
+			/*
+			 * A fortress outline matches the dots of its own side: blue lines
+			 * are as blue as blue dots, red as red. But when the fortress is
+			 * itself swallowed by the opponent, its dots become prisoners, so
+			 * the outline takes the muted captured colour of those dots.
+			 */
+			var ea = ui.state.dots.get(E.key(e.ax, e.ay));
+			var eb = ui.state.dots.get(E.key(e.bx, e.by));
+			var swallowed = (E.isPrisoner(ea) && E.ownerOf(ea) === e.owner) ||
+				(E.isPrisoner(eb) && E.ownerOf(eb) === e.owner);
+			ctx.strokeStyle = swallowed
+				? (e.owner === 1 ? pal.p1Captured : pal.p2Captured)
+				: (e.owner === 1 ? pal.p1 : pal.p2);
 			ctx.beginPath();
 			ctx.moveTo(sx(e.ax), sy(e.ay));
 			ctx.lineTo(sx(e.bx), sy(e.by));
