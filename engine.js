@@ -63,6 +63,35 @@
 	}
 	function prisonerValue(player) { return player === P1 ? C1 : C2; }
 
+	/* ---- position hashing (Zobrist-style, computed on the fly) ------------ */
+
+	var TT_EXACT = 0, TT_LOWER = 1, TT_UPPER = 2;
+	var HASH_SALT_A = 0x5bd1e995, HASH_SALT_B = 0x27d4eb2f;
+	var HASH_DOT = 0, HASH_CLAIMED = 16;
+
+	function zobValue(x, y, v, salt) {
+		if (!v) return 0;
+		var h = (Math.imul(x, 0x9E3779B1) ^ Math.imul(y, 0x85EBCA77) ^ Math.imul(v, 0xC2B2AE3D) ^ salt) | 0;
+		h ^= h >>> 15; h = Math.imul(h, 0x2C1B3C6D);
+		h ^= h >>> 12; h = Math.imul(h, 0x297A2D39);
+		h ^= h >>> 15;
+		return h | 0;
+	}
+
+	function hashDelta(k, kindBase, oldV, newV) {
+		var p = parseKey(k);
+		var o = (oldV || 0) ? kindBase + oldV : 0;
+		var n = (newV || 0) ? kindBase + newV : 0;
+		return [
+			zobValue(p[0], p[1], o, HASH_SALT_A) ^ zobValue(p[0], p[1], n, HASH_SALT_A),
+			zobValue(p[0], p[1], o, HASH_SALT_B) ^ zobValue(p[0], p[1], n, HASH_SALT_B)
+		];
+	}
+
+	function positionKey(state) {
+		return state.h1 + ':' + state.h2 + ':' + state.turn;
+	}
+
 	function createGame(options) {
 		options = options || {};
 		return {
@@ -74,6 +103,8 @@
 			bounds: options.bounds
 				? { x0: options.bounds.x0, y0: options.bounds.y0, x1: options.bounds.x1, y1: options.bounds.y1 }
 				: null,
+			h1: 0,
+			h2: 0,
 			lastMove: null,
 			moveCount: 0
 		};
@@ -89,6 +120,8 @@
 			bounds: state.bounds
 				? { x0: state.bounds.x0, y0: state.bounds.y0, x1: state.bounds.x1, y1: state.bounds.y1 }
 				: null,
+			h1: state.h1 | 0,
+			h2: state.h2 | 0,
 			lastMove: state.lastMove
 				? { x: state.lastMove.x, y: state.lastMove.y, player: state.lastMove.player }
 				: null,
@@ -205,8 +238,10 @@
 			extraTurn: false
 		};
 
+		var d0 = hashDelta(k0, HASH_DOT, undefined, player);
+		state.h1 ^= d0[0]; state.h2 ^= d0[1];
 		state.dots.set(k0, player);
-		log.dotChanges.push({ k: k0, old: undefined });
+		log.dotChanges.push({ k: k0, old: undefined, hd: d0 });
 		state.moveCount++;
 		state.lastMove = { x: x, y: y, player: player };
 
@@ -221,13 +256,20 @@
 			if (!enemies.length) continue;
 			for (j = 0; j < enemies.length; j++) {
 				var ek = key(enemies[j][0], enemies[j][1]);
-				log.dotChanges.push({ k: ek, old: state.dots.get(ek) });
-				state.dots.set(ek, prisonerValue(foe));
+				var oldE = state.dots.get(ek);
+				var nvE = prisonerValue(foe);
+				var dE = hashDelta(ek, HASH_DOT, oldE, nvE);
+				state.h1 ^= dE[0]; state.h2 ^= dE[1];
+				log.dotChanges.push({ k: ek, old: oldE, hd: dE });
+				state.dots.set(ek, nvE);
 				log.captured.push({ x: enemies[j][0], y: enemies[j][1] });
 			}
 			for (j = 0; j < comp.length; j++) {
 				var ck = key(comp[j][0], comp[j][1]);
-				log.claimedChanges.push({ k: ck, old: state.claimed.get(ck) });
+				var oldC = state.claimed.get(ck);
+				var dC = hashDelta(ck, HASH_CLAIMED, oldC, player);
+				state.h1 ^= dC[0]; state.h2 ^= dC[1];
+				log.claimedChanges.push({ k: ck, old: oldC, hd: dC });
 				state.claimed.set(ck, player);
 			}
 		}
@@ -243,11 +285,13 @@
 		var i, c;
 		for (i = log.dotChanges.length - 1; i >= 0; i--) {
 			c = log.dotChanges[i];
+			if (c.hd) { state.h1 ^= c.hd[0]; state.h2 ^= c.hd[1]; }
 			if (c.old === undefined) state.dots.delete(c.k);
 			else state.dots.set(c.k, c.old);
 		}
 		for (i = log.claimedChanges.length - 1; i >= 0; i--) {
 			c = log.claimedChanges[i];
+			if (c.hd) { state.h1 ^= c.hd[0]; state.h2 ^= c.hd[1]; }
 			if (c.old === undefined) state.claimed.delete(c.k);
 			else state.claimed.set(c.k, c.old);
 		}
@@ -459,6 +503,11 @@
 	 * Alpha-beta search written as a generator so it can be paused between
 	 * slices of work (yield) and keep the page responsive even without a web
 	 * worker. `bestMove` drives it to completion in one go.
+	 *
+	 * It uses a transposition table (positions repeat because move order does
+	 * not matter) and a principal-variation search (PVS): only the first move
+	 * is searched with a full window, the rest with a null window and a
+	 * re-search when one unexpectedly improves.
 	 */
 	function* searchGen(state, depth, alpha, beta, ctx, ply, ext) {
 		ctx.nodes++;
@@ -468,12 +517,36 @@
 		}
 		if (depth <= 0) return evaluate(state, ctx.ai);
 
+		var ttKey = null, ttEntry = null;
+		if (ctx.tt) {
+			ttKey = positionKey(state);
+			ttEntry = ctx.tt.get(ttKey) || null;
+			if (ttEntry && ttEntry.depth >= depth) {
+				if (ttEntry.flag === TT_EXACT) return ttEntry.score;
+				if (ttEntry.flag === TT_LOWER && ttEntry.score >= beta) return ttEntry.score;
+				if (ttEntry.flag === TT_UPPER && ttEntry.score <= alpha) return ttEntry.score;
+			}
+		}
+
 		var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
 		if (!moves.length) return evaluate(state, ctx.ai);
 
+		if (ttEntry && ttEntry.x !== null && ttEntry.x !== undefined) {
+			for (var t = 1; t < moves.length; t++) {
+				if (moves[t].x === ttEntry.x && moves[t].y === ttEntry.y) {
+					var first = moves[t];
+					moves[t] = moves[0];
+					moves[0] = first;
+					break;
+				}
+			}
+		}
+
 		var maximizing = (state.turn === ctx.ai);
+		var origAlpha = alpha, origBeta = beta;
 		var best = maximizing ? -Infinity : Infinity;
 		var localBest = null;
+		var searched = 0;
 
 		for (var i = 0; i < moves.length; i++) {
 			var mv = moves[i];
@@ -486,10 +559,23 @@
 
 			var v;
 			try {
-				v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+				if (searched === 0 || !ctx.pvs) {
+					v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+				} else if (maximizing) {
+					v = yield* searchGen(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+					if (v > alpha && v < beta) {
+						v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+					}
+				} else {
+					v = yield* searchGen(state, childDepth, beta - 1, beta, ctx, ply + 1, childExt);
+					if (v < beta && v > alpha) {
+						v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+					}
+				}
 			} finally {
 				undoMove(state, log);
 			}
+			searched++;
 
 			if (maximizing) {
 				if (v > best) { best = v; localBest = mv; }
@@ -507,6 +593,15 @@
 				}
 				break;
 			}
+		}
+
+		if (ttKey && ctx.tt) {
+			var flag = best <= origAlpha ? TT_UPPER : (best >= origBeta ? TT_LOWER : TT_EXACT);
+			ctx.tt.set(ttKey, {
+				depth: depth, flag: flag, score: best,
+				x: localBest ? localBest.x : null, y: localBest ? localBest.y : null
+			});
+			if (ctx.tt.size > ctx.ttMax) ctx.tt.clear();
 		}
 		return best;
 	}
@@ -528,6 +623,9 @@
 			rootLimit: options.rootLimit || 40,
 			tacticalScan: options.tacticalScan || 0,
 			captureScan: options.captureScan || 0,
+			tt: options.tt === false ? null : new Map(),
+			ttMax: options.ttMax || 200000,
+			pvs: options.pvs !== false,
 			ai: player,
 			history: Object.create(null),
 			killer: []
@@ -550,9 +648,22 @@
 		var timedOut = false;
 
 		for (var depth = 2; depth <= maxDepth && !timedOut; depth++) {
+			/* previous iteration's best move goes first */
+			if (ctx.tt) {
+				var rootE = ctx.tt.get(positionKey(state));
+				if (rootE && rootE.x !== null && rootE.x !== undefined) {
+					for (var r = 1; r < moves.length; r++) {
+						if (moves[r].x === rootE.x && moves[r].y === rootE.y) {
+							var tmp = moves[r]; moves[r] = moves[0]; moves[0] = tmp;
+							break;
+						}
+					}
+				}
+			}
 			var alpha = -Infinity;
 			var localBest = null;
 			var localScore = -Infinity;
+			var rsearched = 0;
 
 			for (var i = 0; i < moves.length; i++) {
 				var mv = moves[i];
@@ -563,13 +674,21 @@
 				var childDepth = capture ? depth : depth - 1;
 				var v;
 				try {
-					v = yield* searchGen(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+					if (rsearched === 0 || !ctx.pvs) {
+						v = yield* searchGen(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+					} else {
+						v = yield* searchGen(state, childDepth, alpha, alpha + 1, ctx, 1, capture ? 2 : 3);
+						if (v > alpha) {
+							v = yield* searchGen(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+						}
+					}
 				} catch (e) {
 					if (e === TIMEOUT) { timedOut = true; break; }
 					throw e;
 				} finally {
 					undoMove(state, log);
 				}
+				rsearched++;
 
 				if (v > localScore) { localScore = v; localBest = mv; }
 				if (localScore > alpha) alpha = localScore;
@@ -579,6 +698,12 @@
 			if (localBest) {
 				best = { x: localBest.x, y: localBest.y };
 				bestScore = localScore;
+				if (ctx.tt) {
+					ctx.tt.set(positionKey(state), {
+						depth: depth, flag: TT_EXACT, score: localScore,
+						x: localBest.x, y: localBest.y
+					});
+				}
 				/* best-first ordering for the next, deeper iteration */
 				moves.sort(function (a, b) {
 					if (a === localBest) return -1;
@@ -619,6 +744,9 @@
 			rootLimit: options.rootLimit || 40,
 			tacticalScan: options.tacticalScan || 0,
 			captureScan: options.captureScan || 0,
+			tt: options.tt === false ? null : new Map(),
+			ttMax: options.ttMax || 200000,
+			pvs: options.pvs !== false,
 			ai: player,
 			history: Object.create(null),
 			killer: []
