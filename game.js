@@ -30,11 +30,16 @@
 		return 300 + (index - 5) * 300;
 	}
 
-	/* Bot presets; `blunder` is the chance of a random move (weaker levels). */
+	/*
+	 * Bot presets; `blunder` is the chance of a random move (weaker levels).
+	 * The old medium is now "easy", the old hard is now "medium", and the new
+	 * hard searches much longer and wider — at least three times the effort of
+	 * the previous hard.
+	 */
 	var DIFFICULTY = {
-		easy: { timeBudget: 260, maxDepth: 2, maxMoves: 6, blunder: 0.35 },
-		medium: { timeBudget: 700, maxDepth: 4, maxMoves: 10, blunder: 0.1 },
-		hard: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, blunder: 0 }
+		easy: { timeBudget: 700, maxDepth: 4, maxMoves: 10, rootLimit: 40, blunder: 0.1 },
+		medium: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, rootLimit: 40, blunder: 0 },
+		hard: { timeBudget: 4500, maxDepth: 12, maxMoves: 24, rootLimit: 64, blunder: 0 }
 	};
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
@@ -829,7 +834,8 @@
 				move = E.bestMove(ui.state, 2, {
 					timeBudget: preset.timeBudget,
 					maxDepth: preset.maxDepth,
-					maxMoves: preset.maxMoves
+					maxMoves: preset.maxMoves,
+					rootLimit: preset.rootLimit
 				});
 			}
 			if (!move) { render(); updatePanel(); return; }
