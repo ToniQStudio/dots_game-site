@@ -46,6 +46,16 @@
 		hard: { timeBudget: 16000, maxDepth: 22, maxMoves: 56, rootLimit: 190, tacticalScan: 1, captureScan: 120 }
 	};
 
+	/*
+	 * Anti-repetition safety valve. On an endless board a deadlock can repeat
+	 * forever: the human has a single move that avoids capture and the computer
+	 * a single move that keeps the threat, so nothing ever changes. If the
+	 * computer goes this many of its own moves in a row without anyone being
+	 * captured, it stops insisting on the top move and plays its second-best
+	 * one, which breaks the loop and lets the game progress.
+	 */
+	var REPEAT_AFTER = 10;
+
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 
 	var BADGE_TROPHY =
@@ -79,6 +89,8 @@
 		botPending: null,
 		botRequestId: 0,
 		botMoves: 0,
+		botQuiet: 0,
+		botAlt: false,
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
 		hover: null,
@@ -944,6 +956,10 @@
 		var res = E.place(ui.state, x, y);
 		if (!res.ok) { ui.history.pop(); return; }
 		if (ui.mode === 'bot' && res.player === 2) ui.botMoves += 1;
+		/* Count the computer's fruitless moves so a repeating deadlock is
+		   broken instead of running forever; any capture resets the count. */
+		if (res.capturedCount > 0) ui.botQuiet = 0;
+		else if (ui.mode === 'bot' && res.player === 2) ui.botQuiet += 1;
 		ui.hover = null;
 		ui.cursor.x = x; ui.cursor.y = y;
 		extendScene(res.player, res.claimed);
@@ -1025,6 +1041,8 @@
 		ui.thinking = false;
 		ui.botRequestId += 1;
 		ui.botMoves = 0;
+		ui.botQuiet = 0;
+		ui.botAlt = false;
 		ui.hover = null;
 		ui.flash = null;
 		ui.keyboard = false;
@@ -1186,9 +1204,16 @@
 		return startBotWorker();
 	}
 
-	/* The computer always plays the single best move it has found. */
+	/*
+	 * The computer normally plays the single best move it has found. When the
+	 * anti-repetition valve has tripped, the search returns the top two moves
+	 * and the second one is played instead, so a repeating deadlock breaks.
+	 */
 	function chooseBotMove(list) {
+		var alt = ui.botAlt;
+		ui.botAlt = false;
 		if (!list || !list.length) return null;
+		if (alt && list.length > 1) return list[1];
 		return list[0];
 	}
 
@@ -1208,7 +1233,10 @@
 			tacticalScan: preset.tacticalScan,
 			captureScan: preset.captureScan
 		};
-		var count = 1;
+		/* Break a repeating, capture-less deadlock by trying the runner-up. */
+		ui.botAlt = ui.botQuiet >= REPEAT_AFTER;
+		if (ui.botAlt) ui.botQuiet = 0;
+		var count = ui.botAlt ? 2 : 1;
 		ui.botRequestId += 1;
 		var s = ui.state;
 		ui.botPending = {
@@ -1307,6 +1335,7 @@
 		if (ui.thinking) {
 			ui.thinking = false;
 			ui.botPending = null;
+			ui.botAlt = false;
 			ui.botRequestId += 1; /* ignore any reply that is already on its way */
 		}
 		restore(ui.history.pop());
