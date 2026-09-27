@@ -71,7 +71,10 @@
 		panelHidden: false,
 		botWorker: null,
 		botWorkerUrl: null,
+		botWorkerKind: null,
+		botWorkerKinds: ['file', 'blob'],
 		botWorkerFailed: false,
+		botPending: null,
 		botRequestId: 0,
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
@@ -853,9 +856,12 @@
 	}
 
 	/*
-	 * The search worker keeps long think times off the UI thread. It is built
-	 * from a Blob so the game works even if the separate worker file was not
-	 * deployed; the engine itself is pulled in by absolute URL.
+	 * The search worker keeps long think times off the UI thread. Several ways
+	 * to start it are tried in turn, because some hosts block one or another:
+	 *   1. the same-origin file bot-worker.js (works under `script-src 'self'`);
+	 *   2. a Blob worker that pulls engine.js in by absolute URL (works when
+	 *      separate files are not deployed).
+	 * Only if none starts does the search fall back to the main thread.
 	 */
 	function botWorkerSource() {
 		var engineUrl = new URL('engine.js', document.baseURI).href;
@@ -868,39 +874,65 @@
 			'self.postMessage({id:d.id,move:m});};';
 	}
 
-	function ensureBotWorker() {
-		if (ui.botWorker || ui.botWorkerFailed) return ui.botWorker;
-		if (!window.Worker || !window.Blob || !window.URL || !URL.createObjectURL) {
-			ui.botWorkerFailed = true;
-			return null;
-		}
-		try {
-			ui.botWorkerUrl = URL.createObjectURL(new Blob([botWorkerSource()], { type: 'application/javascript' }));
-			ui.botWorker = new Worker(ui.botWorkerUrl);
-			ui.botWorker.onmessage = function (ev) {
-				var msg = ev.data || {};
-				if (msg.id !== ui.botRequestId) return; /* stale request */
-				finishBotMove(msg.move);
-			};
-			ui.botWorker.onerror = function () {
-				/* worker unavailable: finish this move on the main thread */
-				stopBotWorker();
-				ui.botWorkerFailed = true;
-				if (ui.thinking) {
-					var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
-					finishBotMove(E.bestMove(ui.state, 2, preset));
-				}
-			};
-		} catch (err) {
-			ui.botWorker = null;
-			ui.botWorkerFailed = true;
-		}
-		return ui.botWorker;
-	}
-
 	function stopBotWorker() {
 		if (ui.botWorker) { try { ui.botWorker.terminate(); } catch (err) {} ui.botWorker = null; }
 		if (ui.botWorkerUrl) { try { URL.revokeObjectURL(ui.botWorkerUrl); } catch (err) {} ui.botWorkerUrl = null; }
+	}
+
+	function attachBotWorker(w, kind) {
+		ui.botWorker = w;
+		ui.botWorkerKind = kind;
+		w.onmessage = function (ev) {
+			var msg = ev.data || {};
+			if (msg.id !== ui.botRequestId) return; /* stale request */
+			ui.botPending = null;
+			finishBotMove(msg.move);
+		};
+		w.onerror = function () {
+			/* this worker could not run; drop it and try the next option */
+			if (ui.botWorker === w) stopBotWorker();
+			if (!ui.thinking) return;
+			var spawned = spawnBotWorker();
+			if (spawned) {
+				attachBotWorker(spawned.w, spawned.kind);
+				if (ui.botPending) spawned.w.postMessage(ui.botPending);
+			} else {
+				ui.botWorkerFailed = true;
+				var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
+				finishBotMove(E.bestMove(ui.state, 2, preset));
+			}
+		};
+	}
+
+	function spawnBotWorker() {
+		var kinds = ui.botWorkerKinds || [];
+		while (kinds.length) {
+			var kind = kinds.shift();
+			try {
+				if (kind === 'file' && window.Worker) return { w: new Worker('bot-worker.js'), kind: kind };
+				if (kind === 'blob' && window.Worker && window.Blob && window.URL && URL.createObjectURL) {
+					ui.botWorkerUrl = URL.createObjectURL(new Blob([botWorkerSource()], { type: 'application/javascript' }));
+					return { w: new Worker(ui.botWorkerUrl), kind: kind };
+				}
+			} catch (err) { /* try the next kind */ }
+		}
+		return null;
+	}
+
+	/* Starts the next worker option and re-sends the pending request, if any. */
+	function startBotWorker() {
+		stopBotWorker();
+		var spawned = spawnBotWorker();
+		if (!spawned) { ui.botWorkerFailed = true; return null; }
+		attachBotWorker(spawned.w, spawned.kind);
+		if (ui.botPending) spawned.w.postMessage(ui.botPending);
+		return spawned.w;
+	}
+
+	function ensureBotWorker() {
+		if (ui.botWorker) return ui.botWorker;
+		if (ui.botWorkerFailed) return null;
+		return startBotWorker();
 	}
 
 	function finishBotMove(move) {
@@ -919,23 +951,24 @@
 			tacticalScan: preset.tacticalScan,
 			captureScan: preset.captureScan
 		};
+		ui.botRequestId += 1;
+		var s = ui.state;
+		ui.botPending = {
+			id: ui.botRequestId,
+			dots: Array.from(s.dots),
+			claimed: Array.from(s.claimed),
+			turn: s.turn,
+			score: { 1: s.score[1], 2: s.score[2] },
+			rules: s.rules,
+			bounds: s.bounds,
+			lastMove: s.lastMove,
+			moveCount: s.moveCount,
+			player: 2,
+			options: options
+		};
 		var worker = ensureBotWorker();
 		if (worker) {
-			ui.botRequestId += 1;
-			var s = ui.state;
-			worker.postMessage({
-				id: ui.botRequestId,
-				dots: Array.from(s.dots),
-				claimed: Array.from(s.claimed),
-				turn: s.turn,
-				score: { 1: s.score[1], 2: s.score[2] },
-				rules: s.rules,
-				bounds: s.bounds,
-				lastMove: s.lastMove,
-				moveCount: s.moveCount,
-				player: 2,
-				options: options
-			});
+			worker.postMessage(ui.botPending);
 			return;
 		}
 		/* no worker available: search on the main thread */
