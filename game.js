@@ -836,7 +836,7 @@
 		els.undoBtn.hidden = !started;
 		els.finishBtn.hidden = !started;
 		els.undoBtn.disabled = !ui.history.length || ui.thinking;
-		els.finishBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
+		els.finishBtn.disabled = false;
 		els.canvas.classList.toggle('is-locked', ui.ended || !ui.started);
 		els.canvas.classList.toggle('is-thinking', ui.thinking);
 		updateZoomLabel();
@@ -1459,7 +1459,10 @@
 		els.startBtn.addEventListener('click', startGame);
 		els.undoBtn.addEventListener('click', undo);
 		els.finishBtn.addEventListener('click', function () {
-			if (ui.ended || ui.state.moveCount === 0) return;
+			if (ui.ended) {
+				if (!els.resultDialog.open) els.resultDialog.showModal();
+				return;
+			}
 			askConfirm({
 				title: 'Завершить партию?',
 				lead: 'Партия закончится, а победитель определится по числу пленных.',
