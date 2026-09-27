@@ -31,14 +31,15 @@
 	}
 
 	/*
-	 * Bot presets; `blunder` is the chance of a random move (weaker levels).
-	 * easy = the former medium, medium = the former hard, and hard is roughly
-	 * twice the previous hard again (about 6x the very first hard).
+	 * Bot presets. `blunder` (chance of a random move) is now 0 for every level,
+	 * so the computer never plays a deliberately random move. `tacticalScan`
+	 * and `captureScan` make the search look at captures in the first reply, so
+	 * it does not overlook a capture by either side.
 	 */
 	var DIFFICULTY = {
-		easy: { timeBudget: 700, maxDepth: 4, maxMoves: 10, rootLimit: 40, blunder: 0.1 },
-		medium: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, rootLimit: 40, blunder: 0 },
-		hard: { timeBudget: 9000, maxDepth: 14, maxMoves: 32, rootLimit: 96, blunder: 0 }
+		easy: { timeBudget: 700, maxDepth: 4, maxMoves: 10, rootLimit: 40, tacticalScan: 1, captureScan: 24, blunder: 0 },
+		medium: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, rootLimit: 40, tacticalScan: 1, captureScan: 40, blunder: 0 },
+		hard: { timeBudget: 9000, maxDepth: 14, maxMoves: 32, rootLimit: 96, tacticalScan: 1, captureScan: 64, blunder: 0 }
 	};
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
@@ -863,7 +864,9 @@
 			timeBudget: preset.timeBudget,
 			maxDepth: preset.maxDepth,
 			maxMoves: preset.maxMoves,
-			rootLimit: preset.rootLimit
+			rootLimit: preset.rootLimit,
+			tacticalScan: preset.tacticalScan,
+			captureScan: preset.captureScan
 		};
 		var worker = ensureBotWorker();
 		if (worker) {

@@ -373,7 +373,7 @@
 		return score;
 	}
 
-	function generateMoves(state, ctx, ply, cap) {
+	function generateMoves(state, ctx, ply, cap, detect) {
 		var side = state.turn;
 		var cand = new Set();
 		state.dots.forEach(function (v, k) {
@@ -399,6 +399,32 @@
 		});
 		arr.sort(function (a, b) { return b.s - a.s; });
 		var limit = cap === undefined ? ctx.maxMoves : cap;
+
+		/*
+		 * Capture-aware generation. Playing a move and looking at what it takes
+		 * is expensive, so it is done only where it matters most — at the very
+		 * first reply — and only for the top `captureScan` candidates. Every
+		 * capture found is kept even if it would not fit the move limit, so the
+		 * search never overlooks a capture by either side.
+		 */
+		if (detect && ctx.captureScan > 0 && arr.length) {
+			var scan = Math.min(arr.length, ctx.captureScan);
+			var caps = [], rest = [];
+			for (var i = 0; i < scan; i++) {
+				var mv = arr[i];
+				var log = applyMove(state, mv.x, mv.y);
+				if (!log.ok) continue;
+				if (log.capturedCount > 0) { mv.cap = log.capturedCount; caps.push(mv); }
+				else rest.push(mv);
+				undoMove(state, log);
+			}
+			for (var j = scan; j < arr.length; j++) rest.push(arr[j]);
+			caps.sort(function (a, b) { return b.cap - a.cap; });
+			rest.sort(function (a, b) { return b.s - a.s; });
+			if (caps.length >= limit) return caps.slice(0, limit);
+			return caps.concat(rest.slice(0, limit - caps.length));
+		}
+
 		if (arr.length > limit) arr.length = limit;
 		return arr;
 	}
@@ -434,7 +460,7 @@
 		if ((ctx.nodes & 255) === 0 && now() > ctx.deadline) throw TIMEOUT;
 		if (depth <= 0) return evaluate(state, ctx.ai);
 
-		var moves = generateMoves(state, ctx, ply);
+		var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
 		if (!moves.length) return evaluate(state, ctx.ai);
 
 		var maximizing = (state.turn === ctx.ai);
@@ -492,6 +518,8 @@
 			maxMoves: options.maxMoves || 14,
 			testCap: options.testCap || 400,
 			rootLimit: options.rootLimit || 40,
+			tacticalScan: options.tacticalScan || 0,
+			captureScan: options.captureScan || 0,
 			ai: player,
 			history: Object.create(null),
 			killer: []
