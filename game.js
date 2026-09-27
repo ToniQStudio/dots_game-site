@@ -417,6 +417,39 @@
 				tryAdd(dFrom, to);
 			}
 		}
+
+		/*
+		 * Finally close every open end. A dot left with a single segment would
+		 * be a line sticking out into nothing, so it is linked to a neighbour —
+		 * even past the usual cap if that is the only way, which can make a
+		 * four-way junction. This is what keeps every contour a closed loop.
+		 */
+		var guard = 0, progress = true;
+		while (progress && guard++ < 2000) {
+			progress = false;
+			for (var q = 0; q < order.length; q++) {
+				var end = order[q];
+				if ((deg.get(end) || 0) !== 1) continue;
+				var list = neighbors.get(end);
+				var best = null, bestRank = 99;
+				for (var n = 0; n < list.length; n++) {
+					var cand = list[n].k;
+					var ekc = edgeKey(end, cand);
+					if (used.has(ekc)) continue;
+					if (cutsCorner(end, cand, adj)) continue;
+					var cd = deg.get(cand) || 0;
+					if (cd === 0 || cd >= 4) continue;
+					var rank = (cd === 1 ? 0 : (cd === 2 ? 1 : 2)) + (list[n].ortho ? 0 : 0.5);
+					if (rank < bestRank) { bestRank = rank; best = cand; }
+				}
+				if (best === null) continue;
+				var be = edgeKey(end, best);
+				used.add(be); bump(end); bump(best); link(end, best);
+				var ep1 = E.parseKey(end), ep2 = E.parseKey(best);
+				edges.push({ ax: ep1[0], ay: ep1[1], bx: ep2[0], by: ep2[1], owner: owner });
+				progress = true;
+			}
+		}
 	}
 
 	/* true when `a` and `b` are already joined through a shared dot by two segments */
