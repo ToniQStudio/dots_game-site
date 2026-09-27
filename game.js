@@ -19,8 +19,16 @@
 	/* Field size — side length in cells; null is the endless board. */
 	var FIELD_SIZES = { small: 20, medium: 40, infinite: null };
 
-	/* Game-time choices in seconds; one past the end means "без учёта". */
-	var TIME_STEPS = [20, 40, 60, 120, 180, 300, 600];
+	/*
+	 * Game-time choices in seconds. There is no upper limit: after five
+	 * minutes every step adds another five minutes. "Без учёта" turns the
+	 * clock off entirely.
+	 */
+	function timeAt(index) {
+		var base = [20, 40, 60, 120, 180, 300];
+		if (index < base.length) return base[Math.max(0, index)];
+		return 300 + (index - 5) * 300;
+	}
 
 	/* Bot presets; `blunder` is the chance of a random move (weaker levels). */
 	var DIFFICULTY = {
@@ -28,6 +36,10 @@
 		medium: { timeBudget: 700, maxDepth: 4, maxMoves: 10, blunder: 0.1 },
 		hard: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, blunder: 0 }
 	};
+
+	var MODE_LABEL = { pvp: 'Вдвоём', bot: 'Компьютер' };
+	var DIFFICULTY_LABEL = { easy: 'Лёгкий', medium: 'Средний', hard: 'Сложный' };
+	var SIZE_LABEL = { small: '20×20', medium: '40×40', infinite: 'Без границ' };
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 	var NAMES_DATIVE = { 1: 'синим', 2: 'красным' };
@@ -662,8 +674,10 @@
 
 	function formatClock(ms) {
 		var total = Math.ceil(ms / 1000);
-		var m = Math.floor(total / 60);
+		var h = Math.floor(total / 3600);
+		var m = Math.floor((total % 3600) / 60);
 		var s = total % 60;
+		if (h > 0) return h + ':' + (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
 		return m + ':' + (s < 10 ? '0' : '') + s;
 	}
 
@@ -769,6 +783,7 @@
 		els.canvas.classList.toggle('is-locked', isLocked());
 		updateZoomLabel();
 		updateTimerLabel();
+		applySettingsLock();
 	}
 
 	/* ----------------------------------------------------------------- bot --- */
@@ -876,31 +891,55 @@
 		updateTimeUI();
 	}
 
+	function settingsLocked() {
+		return ui.state.moveCount > 0 && !ui.ended;
+	}
+
+	function setupSummary() {
+		var parts = [MODE_LABEL[ui.mode] || 'Вдвоём'];
+		if (ui.mode === 'bot') parts.push(DIFFICULTY_LABEL[ui.difficulty] || 'Средний');
+		parts.push(SIZE_LABEL[ui.size] || 'Без границ');
+		parts.push(ui.timeLimit > 0 ? formatClock(ui.timeLimit * 1000) : 'Без учёта');
+		return parts.join(' · ');
+	}
+
+	/* Setup controls are frozen while a game is in progress; the chosen
+	   parameters stay visible as plain information. */
+	function applySettingsLock() {
+		var locked = settingsLocked();
+		Array.prototype.forEach.call(els.settingsControls, function (el) {
+			el.disabled = locked;
+		});
+		if (els.timeStepper) els.timeStepper.classList.toggle('is-locked', locked);
+		if (els.setupInfo) {
+			els.setupInfo.hidden = !locked;
+			els.setupInfo.textContent = locked ? setupSummary() : '';
+		}
+	}
+
 	/* The displayed value is the pending choice; the timer is only "on" when a
 	   numeric value is selected, otherwise the game runs without a limit. */
 	function updateTimeUI() {
 		if (!els.timeValue) return;
 		var unlimited = ui.timeLimit === 0;
-		els.timeValue.textContent = ui.timeIndex >= TIME_STEPS.length
-			? '∞'
-			: formatClock(TIME_STEPS[ui.timeIndex] * 1000);
+		els.timeValue.textContent = formatClock(timeAt(ui.timeIndex) * 1000);
 		els.timeStepper.classList.toggle('is-idle', unlimited);
 		els.timeNone.classList.toggle('is-active', unlimited);
 		els.timeNone.setAttribute('aria-pressed', unlimited ? 'true' : 'false');
 	}
 
 	function stepTime(dir) {
-		var next = clamp(ui.timeIndex + dir, 0, TIME_STEPS.length);
-		if (next === ui.timeIndex) {
-			/* at a boundary: turn on the value already shown, or stop */
-			if (ui.timeLimit === 0 && ui.timeIndex < TIME_STEPS.length) {
-				ui.timeLimit = TIME_STEPS[ui.timeIndex];
-			} else {
-				return;
-			}
+		if (dir > 0) {
+			ui.timeIndex += 1;
+			ui.timeLimit = timeAt(ui.timeIndex);
+		} else if (ui.timeIndex > 0) {
+			ui.timeIndex -= 1;
+			ui.timeLimit = timeAt(ui.timeIndex);
+		} else if (ui.timeLimit === 0) {
+			/* already at the smallest value: switch the clock on */
+			ui.timeLimit = timeAt(0);
 		} else {
-			ui.timeIndex = next;
-			ui.timeLimit = next >= TIME_STEPS.length ? 0 : TIME_STEPS[next];
+			return;
 		}
 		saveSetting('dots:timeIndex', String(ui.timeIndex));
 		saveSetting('dots:time', String(ui.timeLimit));
@@ -1324,6 +1363,8 @@
 		els.timeNone = $('timeNone');
 		els.panel = document.querySelector('.panel');
 		els.panelBtn = $('panelBtn');
+		els.settingsControls = document.querySelectorAll('.settings button');
+		els.setupInfo = $('setupInfo');
 		els.difficultySetting = $('difficultySetting');
 		els.timeLeft = $('timeLeft');
 		els.timeSep = $('timeSep');
@@ -1336,11 +1377,16 @@
 		var diff = loadSetting('dots:difficulty', 'medium');
 		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
 		var storedIndex = parseInt(loadSetting('dots:timeIndex', '0'), 10);
-		ui.timeIndex = isNaN(storedIndex) ? 0 : clamp(storedIndex, 0, TIME_STEPS.length);
+		ui.timeIndex = isNaN(storedIndex) ? 0 : Math.max(0, storedIndex);
 		ui.timeLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);
 		if (ui.timeLimit > 0) {
-			var ti = TIME_STEPS.indexOf(ui.timeLimit);
-			if (ti >= 0) ui.timeIndex = ti; else ui.timeLimit = 0;
+			var found = -1;
+			for (var ti = 0; ti < 100000; ti++) {
+				var tv = timeAt(ti);
+				if (tv === ui.timeLimit) { found = ti; break; }
+				if (tv > ui.timeLimit) break;
+			}
+			if (found >= 0) ui.timeIndex = found; else ui.timeLimit = 0;
 		}
 		ui.panelHidden = loadSetting('dots:panelHidden', '0') === '1';
 		applyPanelUI();

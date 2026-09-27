@@ -460,6 +460,17 @@ body.panel-hidden .panel { transform: translateX(100%); }
 	letter-spacing: 0.06em;
 	color: var(--ink-3);
 }
+.setup-info {
+	margin: 0;
+	padding: 8px 10px;
+	border-radius: var(--radius-md);
+	background: var(--surface-2);
+	color: var(--ink-2);
+	font-size: 12px;
+	line-height: 1.35;
+}
+.setup-info[hidden] { display: none; }
+.settings button:disabled { opacity: 0.4; cursor: not-allowed; }
 
 .segmented {
 	display: grid;
