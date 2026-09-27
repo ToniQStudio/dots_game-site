@@ -17,7 +17,7 @@
 	var MAX_ZOOM = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
 
 	/* Field size — side length in cells; null is the endless board. */
-	var FIELD_SIZES = { small: 30, medium: 60, infinite: null };
+	var FIELD_SIZES = { small: 20, medium: 40, infinite: null };
 
 	/* Bot presets; `blunder` is the chance of a random move (weaker levels). */
 	var DIFFICULTY = {
@@ -45,6 +45,9 @@
 		mode: 'pvp',
 		size: 'infinite',
 		difficulty: 'medium',
+		timeLimit: 0,
+		deadline: null,
+		clockTimer: null,
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
 		hover: null,
@@ -587,6 +590,7 @@
 		ui.hover = null;
 		ui.cursor.x = x; ui.cursor.y = y;
 		extendScene(res.player, res.claimed);
+		if (ui.timeLimit && !ui.deadline) startClock();
 		announce(res, player);
 		render();
 		updatePanel();
@@ -600,6 +604,51 @@
 		}
 		text += ' Ход: ' + NAMES[ui.state.turn] + '.';
 		els.live.textContent = text;
+	}
+
+	/* ---------------------------------------------------------------- clock --- */
+
+	function nowMs() { return (window.performance && performance.now) ? performance.now() : Date.now(); }
+
+	function formatClock(ms) {
+		var total = Math.ceil(ms / 1000);
+		var m = Math.floor(total / 60);
+		var s = total % 60;
+		return m + ':' + (s < 10 ? '0' : '') + s;
+	}
+
+	function updateTimerLabel() {
+		if (!els.timeLeft) return;
+		var show = ui.timeLimit > 0;
+		els.timeLeft.hidden = !show;
+		if (els.timeSep) els.timeSep.hidden = !show;
+		if (!show) return;
+		var left;
+		if (ui.ended) left = 0;
+		else if (ui.deadline) left = Math.max(0, ui.deadline - nowMs());
+		else left = ui.timeLimit * 1000;
+		els.timeLeft.textContent = formatClock(left);
+		els.timeLeft.classList.toggle('is-low', !ui.ended && left <= 5000);
+	}
+
+	function stopClock() {
+		if (ui.clockTimer) { window.clearInterval(ui.clockTimer); ui.clockTimer = null; }
+	}
+
+	/* The clock starts on the first move, so choosing the setting is not timed. */
+	function startClock() {
+		stopClock();
+		if (!ui.timeLimit || ui.ended) return;
+		ui.deadline = nowMs() + ui.timeLimit * 1000;
+		ui.clockTimer = window.setInterval(function () {
+			if (ui.ended) { stopClock(); return; }
+			updateTimerLabel();
+			if (ui.deadline && nowMs() >= ui.deadline) {
+				stopClock();
+				if (!ui.ended) showResult(null, 'time');
+			}
+		}, 200);
+		updateTimerLabel();
 	}
 
 	/* ----------------------------------------------------------- new game --- */
@@ -619,6 +668,8 @@
 		ui.flash = null;
 		ui.keyboard = false;
 		ui.scene = { edges: [] };
+		ui.deadline = null;
+		stopClock();
 		var b = ui.state.bounds;
 		ui.cursor.x = b ? Math.floor((b.x0 + b.x1) / 2) : 0;
 		ui.cursor.y = b ? Math.floor((b.y0 + b.y1) / 2) : 0;
@@ -667,6 +718,7 @@
 		els.resignBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
 		els.canvas.classList.toggle('is-locked', isLocked());
 		updateZoomLabel();
+		updateTimerLabel();
 	}
 
 	/* ----------------------------------------------------------------- bot --- */
@@ -771,6 +823,9 @@
 		Array.prototype.forEach.call(els.difficultyOpts, function (btn) {
 			markOption(btn, btn.getAttribute('data-difficulty') === ui.difficulty);
 		});
+		Array.prototype.forEach.call(els.timeOpts, function (btn) {
+			markOption(btn, (parseInt(btn.getAttribute('data-time'), 10) || 0) === ui.timeLimit);
+		});
 	}
 
 	function markOption(btn, on) {
@@ -783,6 +838,7 @@
 	function showResult(winner, reason) {
 		ui.ended = true;
 		ui.thinking = false;
+		stopClock();
 		var s = ui.state;
 		var s1 = s.score[1], s2 = s.score[2];
 		var title, lead;
@@ -802,6 +858,7 @@
 			lead = NAMES[w] + ' взяли в плен ' + wn + ' ' + pointsWord(wn) + ' соперника.';
 			els.resultBadge.innerHTML = BADGE_TROPHY;
 		}
+		if (reason === 'time') lead = 'Время вышло. ' + lead;
 
 		els.resultTitle.textContent = title;
 		els.resultLead.textContent = lead;
@@ -1036,6 +1093,17 @@
 			});
 		});
 
+		Array.prototype.forEach.call(els.timeOpts, function (btn) {
+			btn.addEventListener('click', function () {
+				var next = parseInt(btn.getAttribute('data-time'), 10) || 0;
+				if (next === ui.timeLimit) return;
+				ui.timeLimit = next;
+				applySettingsUI();
+				saveSetting('dots:time', String(next));
+				newGame();
+			});
+		});
+
 		els.confirmOk.addEventListener('click', function () {
 			var cb = confirmCallback;
 			confirmCallback = null;
@@ -1148,7 +1216,10 @@
 		els.modeOpts = document.querySelectorAll('[data-mode]');
 		els.sizeOpts = document.querySelectorAll('[data-size]');
 		els.difficultyOpts = document.querySelectorAll('[data-difficulty]');
+		els.timeOpts = document.querySelectorAll('[data-time]');
 		els.difficultySetting = $('difficultySetting');
+		els.timeLeft = $('timeLeft');
+		els.timeSep = $('timeSep');
 		els.live = $('live');
 
 		initTheme();
@@ -1157,6 +1228,7 @@
 		ui.size = FIELD_SIZES.hasOwnProperty(size) ? size : 'infinite';
 		var diff = loadSetting('dots:difficulty', 'medium');
 		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
+		ui.timeLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);
 		applySettingsUI();
 		newGame();
 		bindEvents();

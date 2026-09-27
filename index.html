@@ -54,6 +54,8 @@
 			<span class="turn__text" id="turnText">Ход: Синие</span>
 		</div>
 		<div class="board__meta">
+			<span class="meta meta--sep" id="timeSep" hidden aria-hidden="true">·</span>
+			<span class="meta meta--clock" id="timeLeft" hidden>0:00</span>
 			<span class="meta" id="dotCount">Точек: 0</span>
 			<span class="meta meta--sep" aria-hidden="true">·</span>
 			<span class="meta" id="moveCount">Ходов: 0</span>
@@ -98,9 +100,20 @@
 		<div class="setting">
 			<span class="setting__label" id="sizeLabel">Поле</span>
 			<div class="segmented segmented--3" role="group" aria-labelledby="sizeLabel">
-				<button class="segmented__opt" data-size="small" type="button" aria-pressed="false">30×30</button>
-				<button class="segmented__opt" data-size="medium" type="button" aria-pressed="false">60×60</button>
+				<button class="segmented__opt" data-size="small" type="button" aria-pressed="false">20×20</button>
+				<button class="segmented__opt" data-size="medium" type="button" aria-pressed="false">40×40</button>
 				<button class="segmented__opt is-active" data-size="infinite" type="button" aria-pressed="true">Без границ</button>
+			</div>
+		</div>
+		<div class="setting">
+			<span class="setting__label" id="timeLabel">Время партии</span>
+			<div class="segmented segmented--wrap" role="group" aria-labelledby="timeLabel">
+				<button class="segmented__opt" data-time="20" type="button" aria-pressed="false">20 с</button>
+				<button class="segmented__opt" data-time="40" type="button" aria-pressed="false">40 с</button>
+				<button class="segmented__opt" data-time="60" type="button" aria-pressed="false">1 мин</button>
+				<button class="segmented__opt" data-time="120" type="button" aria-pressed="false">2 мин</button>
+				<button class="segmented__opt" data-time="180" type="button" aria-pressed="false">3 мин</button>
+				<button class="segmented__opt is-active" data-time="0" type="button" aria-pressed="true">Без учёта</button>
 			</div>
 		</div>
 	</div>
@@ -181,7 +194,9 @@
 			<ul>
 				<li>Соперники всегда ходят по очереди.</li>
 				<li>Играть можно вдвоём или против компьютера. У компьютера три уровня: лёгкий, средний и сложный.</li>
-				<li>Поле можно выбрать: 30×30 клеток, 60×60 клеток или без границ. Перемещайтесь перетаскиванием, масштаб — колесом или кнопками (50–150%).</li>
+				<li>Поле можно выбрать: 20×20 клеток, 40×40 клеток или без границ.</li>
+				<li>Перед партией можно задать общее время: 20 секунд и больше или без учёта времени. Когда время выходит, партия завершается, а победитель определяется по числу пленных.</li>
+				<li>Перемещайтесь перетаскиванием, масштаб — колесом или кнопками (50–150%).</li>
 				<li>Партия заканчивается, когда игрок сдаётся или соперники завершают игру.</li>
 				<li>Побеждает тот, кто взял в плен больше точек соперника.</li>
 			</ul>
