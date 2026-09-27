@@ -33,24 +33,18 @@
 	}
 
 	/*
-	 * Bot presets. `blunder` (chance of a random move) is now 0 for every level,
-	 * so the computer never plays a deliberately random move. `tacticalScan`
-	 * and `captureScan` make the search look at captures in the first reply, so
-	 * it does not overlook a capture by either side.
+	 * Bot presets. Every level searches roughly three times deeper and wider
+	 * than before and never plays a deliberately random move: the computer
+	 * always commits to the move it believes is best, so the whole search is
+	 * aimed at winning. `tacticalScan` and `captureScan` make it look at
+	 * captures in the first reply, so it never overlooks a capture by either
+	 * side.
 	 */
 	var DIFFICULTY = {
-		easy: { timeBudget: 700, maxDepth: 4, maxMoves: 10, rootLimit: 40, tacticalScan: 1, captureScan: 24, blunder: 0 },
-		medium: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, rootLimit: 40, tacticalScan: 1, captureScan: 40, blunder: 0 },
-		hard: { timeBudget: 9000, maxDepth: 14, maxMoves: 32, rootLimit: 96, tacticalScan: 1, captureScan: 64, blunder: 0 }
+		easy: { timeBudget: 2100, maxDepth: 7, maxMoves: 16, rootLimit: 70, tacticalScan: 1, captureScan: 40 },
+		medium: { timeBudget: 4500, maxDepth: 13, maxMoves: 30, rootLimit: 100, tacticalScan: 1, captureScan: 76 },
+		hard: { timeBudget: 16000, maxDepth: 22, maxMoves: 56, rootLimit: 190, tacticalScan: 1, captureScan: 120 }
 	};
-
-	/*
-	 * After this many computer moves it stops always playing the single best
-	 * move and picks at random among the top few, so it does not corner the
-	 * player.
-	 */
-	var MERCY_AFTER = 10;
-	var MERCY_CHOICES = 3;
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 
@@ -835,7 +829,9 @@
 		ctx.lineWidth = Math.max(1.05, sc * 0.077);
 		for (var i = 0; i < ui.scene.edges.length; i++) {
 			var e = ui.scene.edges[i];
-			ctx.strokeStyle = e.owner === 1 ? pal.p1Captured : pal.p2Captured;
+			/* A fortress outline is drawn in the muted colour of the side it
+			   enclosed: blue enclosing red draws dark red, and vice versa. */
+			ctx.strokeStyle = e.owner === 1 ? pal.p2Captured : pal.p1Captured;
 			ctx.beginPath();
 			ctx.moveTo(sx(e.ax), sy(e.ay));
 			ctx.lineTo(sx(e.bx), sy(e.by));
@@ -852,12 +848,12 @@
 				ctx.fillStyle = v === 1 ? pal.p1 : pal.p2;
 			} else {
 				/*
-				 * A prisoner takes the captured colour of the side that caught
-				 * it, so a fortress and every dot inside it share one muted
-				 * colour even when a previously enclosed area is enclosed again.
+				 * An enclosed dot keeps the muted colour of the side it was
+				 * taken from: captured red dots are dark red, captured blue
+				 * dots dark blue.
 				 */
 				var own = E.ownerOf(v);
-				ctx.fillStyle = own === 1 ? pal.p2Captured : pal.p1Captured;
+				ctx.fillStyle = own === 1 ? pal.p1Captured : pal.p2Captured;
 			}
 			ctx.beginPath(); ctx.arc(px, py, sc * 0.15, 0, TAU); ctx.fill();
 		});
@@ -1108,26 +1104,6 @@
 
 	/* ----------------------------------------------------------------- bot --- */
 
-	/* A legal move near the dots, used for the weaker bot's occasional slips. */
-	function randomMove(player) {
-		var s = ui.state;
-		var pick = null, seen = 0;
-		s.dots.forEach(function (v, k) {
-			var p = E.parseKey(k);
-			var r = (v === player) ? 1 : 2;
-			for (var dx = -r; dx <= r; dx++) {
-				for (var dy = -r; dy <= r; dy++) {
-					if (!dx && !dy) continue;
-					var x = p[0] + dx, y = p[1] + dy;
-					if (!E.canPlace(s, x, y)) continue;
-					seen++;
-					if (Math.random() < 1 / seen) pick = { x: x, y: y };
-				}
-			}
-		});
-		return pick;
-	}
-
 	/*
 	 * The search worker keeps long think times off the UI thread. Several ways
 	 * to start it are tried in turn, because some hosts block one or another:
@@ -1174,7 +1150,7 @@
 				if (ui.botPending) spawned.w.postMessage(ui.botPending);
 			} else {
 				ui.botWorkerFailed = true;
-				runBotSearchCooperative(DIFFICULTY[ui.difficulty] || DIFFICULTY.medium, botMoveCount());
+				runBotSearchCooperative(DIFFICULTY[ui.difficulty] || DIFFICULTY.medium, 1);
 			}
 		};
 	}
@@ -1210,61 +1186,10 @@
 		return startBotWorker();
 	}
 
-	/* How many of the best moves the computer may choose from. */
-	function botMoveCount() {
-		return (ui.mode === 'bot' && ui.botMoves >= MERCY_AFTER) ? MERCY_CHOICES : 1;
-	}
-
-	/* How many placements the human would have left after this computer move. */
-	function humanOptionsAfter(move) {
-		if (!move) return 0;
-		var s = E.clone(ui.state);
-		s.turn = 2;
-		var log = E.applyMove(s, move.x, move.y);
-		if (!log.ok) return 0;
-		s.turn = 1;
-		var x0, y0, x1, y1;
-		if (s.bounds) {
-			x0 = s.bounds.x0; y0 = s.bounds.y0; x1 = s.bounds.x1; y1 = s.bounds.y1;
-		} else {
-			var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-			function acc(x, y) {
-				if (x < minX) minX = x; if (x > maxX) maxX = x;
-				if (y < minY) minY = y; if (y > maxY) maxY = y;
-			}
-			s.dots.forEach(function (v, k) { var p = E.parseKey(k); acc(p[0], p[1]); });
-			s.claimed.forEach(function (v, k) { var p = E.parseKey(k); acc(p[0], p[1]); });
-			x0 = minX - 1; y0 = minY - 1; x1 = maxX + 1; y1 = maxY + 1;
-		}
-		var count = 0;
-		for (var y = y0; y <= y1; y++) {
-			for (var x = x0; x <= x1; x++) {
-				if (E.canPlace(s, x, y)) { count += 1; if (count > 1) return count; }
-			}
-		}
-		return count;
-	}
-
-	/*
-	 * Play the best move, unless it would leave the human boxed in with a
-	 * single placement — then take one of the other good moves instead.
-	 */
+	/* The computer always plays the single best move it has found. */
 	function chooseBotMove(list) {
 		if (!list || !list.length) return null;
-		if (list.length === 1) return list[0];
-		var best = list[0];
-		if (humanOptionsAfter(best) > 1) return best;
-		var safe = [];
-		for (var i = 0; i < list.length; i++) {
-			if (humanOptionsAfter(list[i]) > 1) safe.push(list[i]);
-		}
-		if (safe.length) return safe[(Math.random() * safe.length) | 0];
-		var bestCount = -1, bestMove = list[0];
-		for (var j = 0; j < list.length; j++) {
-			var c = humanOptionsAfter(list[j]);
-			if (c > bestCount) { bestCount = c; bestMove = list[j]; }
-		}
-		return bestMove;
+		return list[0];
 	}
 
 	function finishBotMove(move) {
@@ -1283,7 +1208,7 @@
 			tacticalScan: preset.tacticalScan,
 			captureScan: preset.captureScan
 		};
-		var count = botMoveCount();
+		var count = 1;
 		ui.botRequestId += 1;
 		var s = ui.state;
 		ui.botPending = {
@@ -1359,10 +1284,6 @@
 				ui.thinking = false; render(); updatePanel(); return;
 			}
 			var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
-			if (preset.blunder && Math.random() < preset.blunder) {
-				finishBotMove(randomMove(2));
-				return;
-			}
 			requestBotMove(preset);
 		}, 420);
 	}
