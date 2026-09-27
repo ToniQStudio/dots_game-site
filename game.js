@@ -37,10 +37,6 @@
 		hard: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, blunder: 0 }
 	};
 
-	var MODE_LABEL = { pvp: 'Вдвоём', bot: 'Компьютер' };
-	var DIFFICULTY_LABEL = { easy: 'Лёгкий', medium: 'Средний', hard: 'Сложный' };
-	var SIZE_LABEL = { small: '20×20', medium: '40×40', infinite: 'Без границ' };
-
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 	var NAMES_DATIVE = { 1: 'синим', 2: 'красным' };
 
@@ -895,26 +891,13 @@
 		return ui.state.moveCount > 0 && !ui.ended;
 	}
 
-	function setupSummary() {
-		var parts = [MODE_LABEL[ui.mode] || 'Вдвоём'];
-		if (ui.mode === 'bot') parts.push(DIFFICULTY_LABEL[ui.difficulty] || 'Средний');
-		parts.push(SIZE_LABEL[ui.size] || 'Без границ');
-		parts.push(ui.timeLimit > 0 ? formatClock(ui.timeLimit * 1000) : 'Без учёта');
-		return parts.join(' · ');
-	}
-
-	/* Setup controls are frozen while a game is in progress; the chosen
-	   parameters stay visible as plain information. */
+	/* Setup controls are frozen while a game is in progress. */
 	function applySettingsLock() {
 		var locked = settingsLocked();
 		Array.prototype.forEach.call(els.settingsControls, function (el) {
 			el.disabled = locked;
 		});
 		if (els.timeStepper) els.timeStepper.classList.toggle('is-locked', locked);
-		if (els.setupInfo) {
-			els.setupInfo.hidden = !locked;
-			els.setupInfo.textContent = locked ? setupSummary() : '';
-		}
 	}
 
 	/* The displayed value is the pending choice; the timer is only "on" when a
@@ -1364,7 +1347,6 @@
 		els.panel = document.querySelector('.panel');
 		els.panelBtn = $('panelBtn');
 		els.settingsControls = document.querySelectorAll('.settings button');
-		els.setupInfo = $('setupInfo');
 		els.difficultySetting = $('difficultySetting');
 		els.timeLeft = $('timeLeft');
 		els.timeSep = $('timeSep');
