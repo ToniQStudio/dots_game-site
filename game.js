@@ -32,14 +32,13 @@
 
 	/*
 	 * Bot presets; `blunder` is the chance of a random move (weaker levels).
-	 * The old medium is now "easy", the old hard is now "medium", and the new
-	 * hard searches much longer and wider — at least three times the effort of
-	 * the previous hard.
+	 * easy = the former medium, medium = the former hard, and hard is roughly
+	 * twice the previous hard again (about 6x the very first hard).
 	 */
 	var DIFFICULTY = {
 		easy: { timeBudget: 700, maxDepth: 4, maxMoves: 10, rootLimit: 40, blunder: 0.1 },
 		medium: { timeBudget: 1500, maxDepth: 8, maxMoves: 16, rootLimit: 40, blunder: 0 },
-		hard: { timeBudget: 4500, maxDepth: 12, maxMoves: 24, rootLimit: 64, blunder: 0 }
+		hard: { timeBudget: 9000, maxDepth: 14, maxMoves: 32, rootLimit: 96, blunder: 0 }
 	};
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
@@ -66,6 +65,9 @@
 		deadline: null,
 		clockTimer: null,
 		panelHidden: false,
+		botWorker: null,
+		botWorkerFailed: false,
+		botRequestId: 0,
 		cursor: { x: 0, y: 0 },
 		keyboard: false,
 		hover: null,
@@ -741,6 +743,7 @@
 		ui.history = [];
 		ui.ended = false;
 		ui.thinking = false;
+		ui.botRequestId += 1;
 		ui.hover = null;
 		ui.flash = null;
 		ui.keyboard = false;
@@ -821,25 +824,83 @@
 		return pick;
 	}
 
+	/* The search worker keeps long think times off the UI thread. */
+	function ensureBotWorker() {
+		if (ui.botWorker || ui.botWorkerFailed) return ui.botWorker;
+		if (!window.Worker) { ui.botWorkerFailed = true; return null; }
+		try {
+			ui.botWorker = new Worker('bot-worker.js');
+			ui.botWorker.onmessage = function (ev) {
+				var msg = ev.data || {};
+				if (msg.id !== ui.botRequestId) return; /* stale request */
+				finishBotMove(msg.move);
+			};
+			ui.botWorker.onerror = function () {
+				/* worker unavailable: finish this move on the main thread */
+				ui.botWorkerFailed = true;
+				if (ui.botWorker) { try { ui.botWorker.terminate(); } catch (e) {} ui.botWorker = null; }
+				if (ui.thinking) {
+					var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
+					finishBotMove(E.bestMove(ui.state, 2, preset));
+				}
+			};
+		} catch (err) {
+			ui.botWorker = null;
+			ui.botWorkerFailed = true;
+		}
+		return ui.botWorker;
+	}
+
+	function finishBotMove(move) {
+		ui.thinking = false;
+		if (ui.mode !== 'bot' || ui.ended || ui.state.turn !== 2) { render(); updatePanel(); return; }
+		if (!move) { render(); updatePanel(); return; }
+		commitMove(move.x, move.y);
+	}
+
+	function requestBotMove(preset) {
+		var options = {
+			timeBudget: preset.timeBudget,
+			maxDepth: preset.maxDepth,
+			maxMoves: preset.maxMoves,
+			rootLimit: preset.rootLimit
+		};
+		var worker = ensureBotWorker();
+		if (worker) {
+			ui.botRequestId += 1;
+			var s = ui.state;
+			worker.postMessage({
+				id: ui.botRequestId,
+				dots: Array.from(s.dots),
+				claimed: Array.from(s.claimed),
+				turn: s.turn,
+				score: { 1: s.score[1], 2: s.score[2] },
+				rules: s.rules,
+				bounds: s.bounds,
+				lastMove: s.lastMove,
+				moveCount: s.moveCount,
+				player: 2,
+				options: options
+			});
+			return;
+		}
+		finishBotMove(E.bestMove(ui.state, 2, options));
+	}
+
 	function scheduleBot() {
 		if (ui.mode !== 'bot' || ui.ended || ui.thinking) return;
 		ui.thinking = true;
 		updatePanel();
 		window.setTimeout(function () {
-			ui.thinking = false;
-			if (ui.mode !== 'bot' || ui.ended || ui.state.turn !== 2) { render(); updatePanel(); return; }
-			var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
-			var move = (preset.blunder && Math.random() < preset.blunder) ? randomMove(2) : null;
-			if (!move) {
-				move = E.bestMove(ui.state, 2, {
-					timeBudget: preset.timeBudget,
-					maxDepth: preset.maxDepth,
-					maxMoves: preset.maxMoves,
-					rootLimit: preset.rootLimit
-				});
+			if (ui.mode !== 'bot' || ui.ended || ui.state.turn !== 2) {
+				ui.thinking = false; render(); updatePanel(); return;
 			}
-			if (!move) { render(); updatePanel(); return; }
-			commitMove(move.x, move.y);
+			var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
+			if (preset.blunder && Math.random() < preset.blunder) {
+				finishBotMove(randomMove(2));
+				return;
+			}
+			requestBotMove(preset);
 		}, 420);
 	}
 
@@ -985,6 +1046,7 @@
 	function showResult(winner, reason) {
 		ui.ended = true;
 		ui.thinking = false;
+		ui.botRequestId += 1;
 		stopClock();
 		var s = ui.state;
 		var s1 = s.score[1], s2 = s.score[2];
