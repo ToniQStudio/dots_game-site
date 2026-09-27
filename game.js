@@ -1475,6 +1475,7 @@
 		els.zoomOut.addEventListener('click', function () {
 			stepZoom(-1, viewCenterX(), ui.metrics.cssH / 2); render(); updateZoomLabel();
 		});
+		els.centerLast.addEventListener('click', centerOnLast);
 
 		Array.prototype.forEach.call(els.modeOpts, function (btn) {
 			btn.addEventListener('click', function () {
@@ -1600,6 +1601,7 @@
 		els.rulesBtn = $('rulesBtn');
 		els.zoomIn = $('zoomIn');
 		els.zoomOut = $('zoomOut');
+		els.centerLast = $('centerLast');
 		els.rulesDialog = $('rulesDialog');
 		els.resultDialog = $('resultDialog');
 		els.resultTitle = $('resultTitle');
