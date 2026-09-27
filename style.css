@@ -348,6 +348,7 @@ body.panel-hidden .panel { transform: translateX(100%); }
 }
 .btn .icon { width: 18px; height: 18px; }
 .btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.btn[hidden] { display: none; }
 .btn:active:not(:disabled) { transform: translateY(1px); }
 .btn:disabled { opacity: 0.45; cursor: not-allowed; }
 

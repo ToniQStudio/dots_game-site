@@ -61,6 +61,7 @@
 		state: null,
 		history: [],
 		mode: 'pvp',
+		started: false,
 		size: 'infinite',
 		difficulty: 'medium',
 		first: 'human',
@@ -650,7 +651,7 @@
 	/* --------------------------------------------------------------- state --- */
 
 	function isLocked() {
-		return ui.ended || (ui.mode === 'bot' && (ui.state.turn === 2 || ui.thinking));
+		return ui.ended || !ui.started || (ui.mode === 'bot' && (ui.state.turn === 2 || ui.thinking));
 	}
 
 	function pushHistory() {
@@ -764,6 +765,17 @@
 		fit();
 		frameBoard();
 		updateZoomLabel();
+		ui.started = false;
+		render();
+		updatePanel();
+	}
+
+	/* Started from the panel: the board stays frozen until this is pressed, so
+	   the settings can be chosen even when the computer moves first. */
+	function startGame() {
+		if (ui.started && !ui.ended) return;
+		newGame();
+		ui.started = true;
 		if (ui.mode === 'bot' && ui.first === 'bot') ui.state.turn = 2;
 		render();
 		updatePanel();
@@ -804,12 +816,16 @@
 		els.you2.hidden = !bot;
 		els.you2.textContent = 'соперник';
 
+		var started = ui.started;
+		var inProgress = started && !ui.ended;
+		els.startBtn.hidden = inProgress;
+		els.undoBtn.hidden = !started;
+		els.finishBtn.hidden = !started;
+		els.resignBtn.hidden = !started;
 		els.undoBtn.disabled = !ui.history.length || ui.thinking;
-		els.cancelBtn.hidden = !bot;
-		els.cancelBtn.disabled = !ui.history.length || ui.state.moveCount === 0;
 		els.finishBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
 		els.resignBtn.disabled = ui.ended || s.moveCount === 0 || ui.thinking;
-		els.canvas.classList.toggle('is-locked', ui.ended);
+		els.canvas.classList.toggle('is-locked', ui.ended || !ui.started);
 		els.canvas.classList.toggle('is-thinking', ui.thinking);
 		updateZoomLabel();
 		updateTimerLabel();
@@ -954,25 +970,6 @@
 		updatePanel();
 	}
 
-	/* Stop a pending computer move and take back your own last move. */
-	function cancelMyMove() {
-		if (!ui.history.length || ui.state.moveCount === 0) return;
-		ui.botRequestId += 1;
-		if (ui.botWorker) {
-			try { ui.botWorker.terminate(); } catch (err) {}
-			ui.botWorker = null;
-		}
-		ui.thinking = false;
-		ui.ended = false;
-		restore(ui.history.pop());
-		if (ui.mode === 'bot') {
-			while (ui.state.turn !== 1 && ui.history.length) restore(ui.history.pop());
-		}
-		ui.hover = null;
-		render();
-		updatePanel();
-	}
-
 	function centerOnLast() {
 		var target = ui.state.lastMove;
 		var b = ui.state.bounds;
@@ -1019,12 +1016,11 @@
 	 * and after the end.
 	 */
 	function applyPanelVisibility() {
-		var started = ui.state.moveCount > 0;
+		var started = ui.started;
 		var inProgress = started && !ui.ended;
 		if (els.panelStatus) els.panelStatus.hidden = !started;
 		if (els.scoreEl) els.scoreEl.hidden = !started;
 		if (els.settingsEl) els.settingsEl.hidden = inProgress;
-		if (els.controlsEl) els.controlsEl.hidden = !started;
 	}
 
 	/* The displayed value is the pending choice; the timer is only "on" when a
@@ -1300,9 +1296,8 @@
 		els.canvas.addEventListener('focus', render);
 		els.canvas.addEventListener('blur', render);
 
-		els.newBtn.addEventListener('click', requestNewGame);
+		els.startBtn.addEventListener('click', startGame);
 		els.undoBtn.addEventListener('click', undo);
-		els.cancelBtn.addEventListener('click', cancelMyMove);
 		els.finishBtn.addEventListener('click', function () {
 			if (ui.ended || ui.state.moveCount === 0) return;
 			showResult(null, 'manual');
@@ -1371,7 +1366,6 @@
 		});
 		els.confirmCancel.addEventListener('click', function () { confirmCallback = null; });
 		els.confirmDialog.addEventListener('close', function () { confirmCallback = null; });
-		els.resultNew.addEventListener('click', function () { els.resultDialog.close(); newGame(); });
 
 		Array.prototype.forEach.call(document.querySelectorAll('[data-close]'), function (btn) {
 			btn.addEventListener('click', function () {
@@ -1411,11 +1405,6 @@
 	function saveSetting(k, v) { try { localStorage.setItem(k, v); } catch (err) {} }
 	function loadSetting(k, f) { try { return localStorage.getItem(k) || f; } catch (err) { return f; } }
 
-	function requestNewGame() {
-		if (ui.state.moveCount === 0) { newGame(); return; }
-		askConfirm({ title: 'Начать заново?', lead: 'Текущая партия будет сброшена.', okLabel: 'Начать заново', onOk: newGame });
-	}
-
 	function requestResign() {
 		if (ui.ended || ui.state.moveCount === 0) return;
 		var resigner = ui.state.turn;
@@ -1446,9 +1435,8 @@
 		els.captured2 = $('captured2');
 		els.you1 = $('you1');
 		els.you2 = $('you2');
+		els.startBtn = $('startBtn');
 		els.undoBtn = $('undoBtn');
-		els.cancelBtn = $('cancelBtn');
-		els.newBtn = $('newBtn');
 		els.finishBtn = $('finishBtn');
 		els.resignBtn = $('resignBtn');
 		els.themeBtn = $('themeBtn');
@@ -1464,7 +1452,6 @@
 		els.resultName2 = $('resultName2');
 		els.resultScore1 = $('resultScore1');
 		els.resultScore2 = $('resultScore2');
-		els.resultNew = $('resultNew');
 		els.confirmDialog = $('confirmDialog');
 		els.confirmTitle = $('confirmTitle');
 		els.confirmLead = $('confirmLead');
@@ -1475,7 +1462,6 @@
 		els.difficultyOpts = document.querySelectorAll('[data-difficulty]');
 		els.firstOpts = document.querySelectorAll('[data-first]');
 		els.firstSetting = $('firstSetting');
-		els.controlsEl = document.querySelector('.controls');
 		els.timeStepper = $('timeStepper');
 		els.timeValue = $('timeValue');
 		els.timeDown = $('timeDown');
