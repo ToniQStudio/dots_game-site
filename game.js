@@ -71,6 +71,7 @@
 		clockTimer: null,
 		panelHidden: false,
 		botWorker: null,
+		botWorkerUrl: null,
 		botWorkerFailed: false,
 		botRequestId: 0,
 		cursor: { x: 0, y: 0 },
@@ -854,12 +855,31 @@
 		return pick;
 	}
 
-	/* The search worker keeps long think times off the UI thread. */
+	/*
+	 * The search worker keeps long think times off the UI thread. It is built
+	 * from a Blob so the game works even if the separate worker file was not
+	 * deployed; the engine itself is pulled in by absolute URL.
+	 */
+	function botWorkerSource() {
+		var engineUrl = new URL('engine.js', document.baseURI).href;
+		return 'importScripts(' + JSON.stringify(engineUrl) + ');' +
+			'self.onmessage=function(ev){' +
+			'var d=ev.data||{};' +
+			'var s={dots:new Map(d.dots),claimed:new Map(d.claimed),turn:d.turn,score:d.score,' +
+			'rules:d.rules,bounds:d.bounds||null,lastMove:d.lastMove||null,moveCount:d.moveCount};' +
+			'var m=null;try{m=self.DotsEngine.bestMove(s,d.player,d.options);}catch(err){m=null;}' +
+			'self.postMessage({id:d.id,move:m});};';
+	}
+
 	function ensureBotWorker() {
 		if (ui.botWorker || ui.botWorkerFailed) return ui.botWorker;
-		if (!window.Worker) { ui.botWorkerFailed = true; return null; }
+		if (!window.Worker || !window.Blob || !window.URL || !URL.createObjectURL) {
+			ui.botWorkerFailed = true;
+			return null;
+		}
 		try {
-			ui.botWorker = new Worker('bot-worker.js');
+			ui.botWorkerUrl = URL.createObjectURL(new Blob([botWorkerSource()], { type: 'application/javascript' }));
+			ui.botWorker = new Worker(ui.botWorkerUrl);
 			ui.botWorker.onmessage = function (ev) {
 				var msg = ev.data || {};
 				if (msg.id !== ui.botRequestId) return; /* stale request */
@@ -867,8 +887,8 @@
 			};
 			ui.botWorker.onerror = function () {
 				/* worker unavailable: finish this move on the main thread */
+				stopBotWorker();
 				ui.botWorkerFailed = true;
-				if (ui.botWorker) { try { ui.botWorker.terminate(); } catch (e) {} ui.botWorker = null; }
 				if (ui.thinking) {
 					var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
 					finishBotMove(E.bestMove(ui.state, 2, preset));
@@ -879,6 +899,11 @@
 			ui.botWorkerFailed = true;
 		}
 		return ui.botWorker;
+	}
+
+	function stopBotWorker() {
+		if (ui.botWorker) { try { ui.botWorker.terminate(); } catch (err) {} ui.botWorker = null; }
+		if (ui.botWorkerUrl) { try { URL.revokeObjectURL(ui.botWorkerUrl); } catch (err) {} ui.botWorkerUrl = null; }
 	}
 
 	function finishBotMove(move) {
@@ -916,16 +941,8 @@
 			});
 			return;
 		}
-		/* no worker available: search briefly so the page does not freeze long */
-		var fallback = {
-			timeBudget: Math.min(options.timeBudget, 1500),
-			maxDepth: options.maxDepth,
-			maxMoves: options.maxMoves,
-			rootLimit: options.rootLimit,
-			tacticalScan: options.tacticalScan,
-			captureScan: options.captureScan
-		};
-		finishBotMove(E.bestMove(ui.state, 2, fallback));
+		/* no worker available: search on the main thread */
+		finishBotMove(E.bestMove(ui.state, 2, options));
 	}
 
 	function scheduleBot() {
