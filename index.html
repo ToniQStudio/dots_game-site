@@ -139,12 +139,31 @@
 				<button class="stepper__btn" id="timeDown" type="button" aria-label="Меньше времени">
 					<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M15 6l-6 6 6 6"/></svg>
 				</button>
-				<span class="stepper__value" id="timeValue" aria-live="polite">0:20</span>
+				<span class="stepper__value" id="timeValue" aria-live="polite">Без учёта времени</span>
 				<button class="stepper__btn" id="timeUp" type="button" aria-label="Больше времени">
 					<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>
 				</button>
 			</div>
-			<button class="btn btn--toggle is-active" id="timeNone" type="button" aria-pressed="true">Без учёта времени</button>
+		</div>
+	</div>
+
+	<div class="match-info" id="matchInfo" hidden aria-label="Параметры партии">
+		<p class="match-info__title">Параметры партии</p>
+		<div class="match-info__row">
+			<span class="match-info__label">Соперник</span>
+			<span class="match-info__value" id="infoMode">Вдвоём</span>
+		</div>
+		<div class="match-info__row" id="infoFirstRow">
+			<span class="match-info__label">Первый ход</span>
+			<span class="match-info__value" id="infoFirst">Вы</span>
+		</div>
+		<div class="match-info__row">
+			<span class="match-info__label">Поле</span>
+			<span class="match-info__value" id="infoSize">Без границ</span>
+		</div>
+		<div class="match-info__row">
+			<span class="match-info__label">Время партии</span>
+			<span class="match-info__value" id="infoTime">Без учёта времени</span>
 		</div>
 	</div>
 

@@ -499,6 +499,40 @@ body.panel-hidden .panel { transform: translateX(100%); }
 	color: var(--ink-3);
 }
 
+/* read-only summary of the match settings shown while a game runs */
+.match-info {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 12px;
+	background: var(--surface);
+	border: 1px solid var(--line);
+	border-radius: var(--radius-lg);
+	box-shadow: var(--shadow-sm);
+}
+.match-info[hidden] { display: none; }
+.match-info__title {
+	font-size: 11px;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.06em;
+	color: var(--ink-3);
+}
+.match-info__row {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
+	gap: 10px;
+}
+.match-info__row[hidden] { display: none; }
+.match-info__label { font-size: 12.5px; color: var(--ink-3); }
+.match-info__value {
+	font-size: 12.5px;
+	font-weight: 600;
+	color: var(--ink);
+	text-align: right;
+}
+
 .segmented {
 	display: grid;
 	grid-template-columns: 1fr 1fr;
@@ -526,7 +560,8 @@ body.panel-hidden .panel { transform: translateX(100%); }
 	cursor: pointer;
 	transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
 }
-.stepper__btn:hover { background: var(--surface-2); color: var(--ink); }
+.stepper__btn:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
+.stepper__btn:disabled { opacity: 0.4; cursor: not-allowed; }
 .stepper__btn:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 .stepper__btn .icon { width: 18px; height: 18px; }
 .stepper__value {
@@ -538,11 +573,8 @@ body.panel-hidden .panel { transform: translateX(100%); }
 	font-variant-numeric: tabular-nums;
 	color: var(--ink);
 }
-.stepper.is-idle .stepper__value { color: var(--ink-3); opacity: 0.55; font-weight: 600; }
+.stepper__value.is-unlimited { font-size: 13px; letter-spacing: 0; font-weight: 700; color: var(--ink-2); }
 
-.btn--toggle { background: var(--surface); color: var(--ink-2); border-color: var(--line-strong); min-height: 38px; }
-.btn--toggle:hover:not(:disabled) { background: var(--surface-2); color: var(--ink); }
-.btn--toggle.is-active { background: var(--accent-soft); color: var(--accent); border-color: transparent; }
 .segmented__opt {
 	min-height: 36px;
 	padding: 0 10px;

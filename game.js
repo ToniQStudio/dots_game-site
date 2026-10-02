@@ -27,8 +27,9 @@
 	 * clock off entirely.
 	 */
 	function timeAt(index) {
+		if (index < 0) return 0; /* "без учёта времени" is the smallest step */
 		var base = [20, 40, 60, 120, 180, 300];
-		if (index < base.length) return base[Math.max(0, index)];
+		if (index < base.length) return base[index];
 		return 300 + (index - 5) * 300;
 	}
 
@@ -57,6 +58,8 @@
 	var REPEAT_AFTER = 10;
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
+	var DIFFICULTY_NAMES = { easy: 'Лёгкий', medium: 'Средний', hard: 'Сложный' };
+	var SIZE_NAMES = { small: '20×20', medium: '40×40', infinite: 'Без границ' };
 
 	var BADGE_TROPHY =
 		'<svg viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M6 3h12v5a6 6 0 0 1-12 0z"/><path d="M6 5H3v2a4 4 0 0 0 4 4M18 5h3v2a4 4 0 0 1-4 4"/></svg>';
@@ -77,7 +80,7 @@
 		difficulty: 'medium',
 		first: 'human',
 		timeLimit: 0,
-		timeIndex: 0,
+		timeIndex: -1,
 		deadline: null,
 		clockTimer: null,
 		turnTimer: null,
@@ -1445,6 +1448,25 @@
 		if (els.panelStatus) els.panelStatus.hidden = !started;
 		if (els.scoreEl) els.scoreEl.hidden = !started;
 		if (els.settingsEl) els.settingsEl.hidden = inProgress;
+		if (els.matchInfo) {
+			updateMatchInfo();
+			els.matchInfo.hidden = !inProgress;
+		}
+	}
+
+	/* Read-only reminder of the frozen match settings, shown while playing. */
+	function updateMatchInfo() {
+		if (!els.matchInfo) return;
+		var bot = ui.mode === 'bot';
+		els.infoMode.textContent = bot
+			? 'Компьютер · ' + (DIFFICULTY_NAMES[ui.difficulty] || 'Средний')
+			: 'Вдвоём';
+		els.infoFirstRow.hidden = !bot;
+		els.infoFirst.textContent = ui.first === 'bot' ? 'Компьютер' : 'Вы';
+		els.infoSize.textContent = SIZE_NAMES[ui.size] || 'Без границ';
+		els.infoTime.textContent = ui.timeLimit === 0
+			? 'Без учёта времени'
+			: formatClock(ui.timeLimit * 1000);
 	}
 
 	/* The displayed value is the pending choice; the timer is only "on" when a
@@ -1452,35 +1474,25 @@
 	function updateTimeUI() {
 		if (!els.timeValue) return;
 		var unlimited = ui.timeLimit === 0;
-		els.timeValue.textContent = formatClock(timeAt(ui.timeIndex) * 1000);
-		els.timeStepper.classList.toggle('is-idle', unlimited);
-		els.timeNone.classList.toggle('is-active', unlimited);
-		els.timeNone.setAttribute('aria-pressed', unlimited ? 'true' : 'false');
+		els.timeValue.textContent = unlimited ? 'Без учёта времени' : formatClock(ui.timeLimit * 1000);
+		els.timeValue.classList.toggle('is-unlimited', unlimited);
+		if (els.timeDown) els.timeDown.disabled = unlimited;
 	}
 
 	function stepTime(dir) {
 		if (dir > 0) {
-			ui.timeIndex += 1;
-			ui.timeLimit = timeAt(ui.timeIndex);
+			ui.timeIndex = ui.timeIndex < 0 ? 0 : ui.timeIndex + 1;
 		} else if (ui.timeIndex > 0) {
 			ui.timeIndex -= 1;
-			ui.timeLimit = timeAt(ui.timeIndex);
-		} else if (ui.timeLimit === 0) {
-			/* already at the smallest value: switch the clock on */
-			ui.timeLimit = timeAt(0);
+		} else if (ui.timeIndex === 0) {
+			/* the smallest value is "без учёта времени" */
+			ui.timeIndex = -1;
 		} else {
 			return;
 		}
+		ui.timeLimit = timeAt(ui.timeIndex);
 		saveSetting('dots:timeIndex', String(ui.timeIndex));
 		saveSetting('dots:time', String(ui.timeLimit));
-		applySettingsUI();
-		newGame();
-	}
-
-	function clearTimeLimit() {
-		if (ui.timeLimit === 0) return;
-		ui.timeLimit = 0;
-		saveSetting('dots:time', '0');
 		applySettingsUI();
 		newGame();
 	}
@@ -1786,7 +1798,6 @@
 
 		els.timeDown.addEventListener('click', function () { stepTime(-1); });
 		els.timeUp.addEventListener('click', function () { stepTime(1); });
-		els.timeNone.addEventListener('click', clearTimeLimit);
 		els.panelBtn.addEventListener('click', togglePanel);
 
 		els.confirmOk.addEventListener('click', function () {
@@ -1892,12 +1903,17 @@
 		els.timeValue = $('timeValue');
 		els.timeDown = $('timeDown');
 		els.timeUp = $('timeUp');
-		els.timeNone = $('timeNone');
 		els.panel = document.querySelector('.panel');
 		els.panelBtn = $('panelBtn');
 		els.settingsEl = document.querySelector('.settings');
 		els.scoreEl = document.querySelector('.score');
 		els.panelStatus = document.querySelector('.panel__status');
+		els.matchInfo = $('matchInfo');
+		els.infoMode = $('infoMode');
+		els.infoFirstRow = $('infoFirstRow');
+		els.infoFirst = $('infoFirst');
+		els.infoSize = $('infoSize');
+		els.infoTime = $('infoTime');
 		els.difficultySetting = $('difficultySetting');
 		els.timeLeft = $('timeLeft');
 		els.timeSep = $('timeSep');
@@ -1910,18 +1926,18 @@
 		var diff = loadSetting('dots:difficulty', 'medium');
 		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
 		ui.first = loadSetting('dots:first', 'human') === 'bot' ? 'bot' : 'human';
-		var storedIndex = parseInt(loadSetting('dots:timeIndex', '0'), 10);
-		ui.timeIndex = isNaN(storedIndex) ? 0 : Math.max(0, storedIndex);
-		ui.timeLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);
-		if (ui.timeLimit > 0) {
-			var found = -1;
+		/* The chosen limit is the source of truth; 0 means "без учёта времени". */
+		var storedLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);
+		var found = -1;
+		if (storedLimit > 0) {
 			for (var ti = 0; ti < 100000; ti++) {
 				var tv = timeAt(ti);
-				if (tv === ui.timeLimit) { found = ti; break; }
-				if (tv > ui.timeLimit) break;
+				if (tv === storedLimit) { found = ti; break; }
+				if (tv > storedLimit) break;
 			}
-			if (found >= 0) ui.timeIndex = found; else ui.timeLimit = 0;
 		}
+		ui.timeIndex = found;
+		ui.timeLimit = found >= 0 ? storedLimit : 0;
 		/* The side panel always starts open on a fresh page load. */
 		ui.panelHidden = false;
 		applyPanelUI();
