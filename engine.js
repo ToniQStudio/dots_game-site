@@ -947,6 +947,7 @@
 			lmp: options.lmp !== false,
 			lmpDepth: options.lmpDepth === undefined ? 2 : options.lmpDepth,
 			lmpCount: options.lmpCount === undefined ? 12 : options.lmpCount,
+			asp: options.aspiration === true,
 			repSet: new Set(options.seen || []),
 			ai: player,
 			history: Object.create(null),
@@ -1245,39 +1246,54 @@
 					}
 				}
 			}
-			var alpha = -Infinity;
+			var delta = 40;
+			var useAsp = ctx.asp && depth > 3 && bestScore !== -Infinity;
+			var rootAlpha = useAsp ? bestScore - delta : -Infinity;
+			var rootBeta = useAsp ? bestScore + delta : Infinity;
 			var localBest = null;
 			var localScore = -Infinity;
-			var rsearched = 0;
+			while (true) {
+				localBest = null;
+				localScore = -Infinity;
+				var alpha = rootAlpha;
+				var beta = rootBeta;
+				var rsearched = 0;
 
-			for (var i = 0; i < moves.length; i++) {
-				var mv = moves[i];
-				var log = applyMove(state, mv.x, mv.y);
-				if (!log.ok) continue;
+				for (var i = 0; i < moves.length; i++) {
+					var mv = moves[i];
+					var log = applyMove(state, mv.x, mv.y);
+					if (!log.ok) continue;
 
-				var capture = log.capturedCount > 0;
-				var childDepth = capture ? depth : depth - 1;
-				var v;
-				try {
-					if (rsearched === 0 || !ctx.pvs) {
-						v = searchSync(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
-					} else {
-						v = searchSync(state, childDepth, alpha, alpha + 1, ctx, 1, capture ? 2 : 3);
-						if (v > alpha) {
-							v = searchSync(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+					var capture = log.capturedCount > 0;
+					var childDepth = capture ? depth : depth - 1;
+					var v;
+					try {
+						if (rsearched === 0 || !ctx.pvs) {
+							v = searchSync(state, childDepth, alpha, beta, ctx, 1, capture ? 2 : 3);
+						} else {
+							v = searchSync(state, childDepth, alpha, alpha + 1, ctx, 1, capture ? 2 : 3);
+							if (v > alpha && v < beta) {
+								v = searchSync(state, childDepth, alpha, beta, ctx, 1, capture ? 2 : 3);
+							}
 						}
+					} catch (e) {
+						if (e === TIMEOUT) { timedOut = true; break; }
+						throw e;
+					} finally {
+						undoMove(state, log);
 					}
-				} catch (e) {
-					if (e === TIMEOUT) { timedOut = true; break; }
-					throw e;
-				} finally {
-					undoMove(state, log);
-				}
-				rsearched++;
+					rsearched++;
 
-				if (v > localScore) { localScore = v; localBest = mv; }
-				if (localScore > alpha) alpha = localScore;
-				if (now() > ctx.deadline) { timedOut = true; break; }
+					if (v > localScore) { localScore = v; localBest = mv; }
+					if (localScore > alpha) alpha = localScore;
+					if (localScore >= beta) break; /* fail high: widen and re-search */
+					if (now() > ctx.deadline) { timedOut = true; break; }
+				}
+
+				if (timedOut) break;
+				if (localScore >= rootBeta && rootBeta !== Infinity) { rootBeta = Infinity; continue; }
+				if (localScore <= rootAlpha && rootAlpha !== -Infinity) { rootAlpha = -Infinity; continue; }
+				break;
 			}
 
 			if (localBest) {
