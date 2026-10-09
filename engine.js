@@ -664,6 +664,29 @@
 	}
 
 	/*
+	 * Did the move just played by `mover` leave an enemy dot with at most one
+	 * orthogonal escape — i.e. one move away from capture? Such a forcing move
+	 * is worth an extra ply so multi-move captures and forks are seen.
+	 */
+	function createsThreat(state, x, y, mover) {
+		var foe = other(mover);
+		for (var dx = -1; dx <= 1; dx++) {
+			for (var dy = -1; dy <= 1; dy++) {
+				if (dx === 0 && dy === 0) continue;
+				var ex = x + dx, ey = y + dy;
+				if (state.dots.get(key(ex, ey)) !== foe) continue;
+				var free = 0;
+				if (state.dots.get(key(ex + 1, ey)) === undefined && !state.claimed.has(key(ex + 1, ey))) free++;
+				if (state.dots.get(key(ex - 1, ey)) === undefined && !state.claimed.has(key(ex - 1, ey))) free++;
+				if (state.dots.get(key(ex, ey + 1)) === undefined && !state.claimed.has(key(ex, ey + 1))) free++;
+				if (state.dots.get(key(ex, ey - 1)) === undefined && !state.claimed.has(key(ex, ey - 1))) free++;
+				if (free <= 1) return true;
+			}
+		}
+		return false;
+	}
+
+	/*
 	 * Candidate moves: near every dot on the board, plus (when `detect`) every
 	 * capture, so the search never prunes a finishing move.
 	 */
@@ -916,10 +939,14 @@
 			captureFree: options.captureFree === undefined ? 6 : options.captureFree,
 			qMax: options.qMax === undefined ? 5 : options.qMax,
 			qLimit: options.qLimit || 20,
+			threatExt: options.threatExt === undefined ? 0 : options.threatExt,
 			tt: options.tt === false ? null : (options.tt instanceof Map ? options.tt : new Map()),
 			ttMax: options.ttMax || 200000,
 			pvs: options.pvs !== false,
 			lmr: options.lmr !== false,
+			lmp: options.lmp !== false,
+			lmpDepth: options.lmpDepth === undefined ? 2 : options.lmpDepth,
+			lmpCount: options.lmpCount === undefined ? 12 : options.lmpCount,
 			repSet: new Set(options.seen || []),
 			ai: player,
 			history: Object.create(null),
@@ -1099,13 +1126,23 @@
 
 			for (var i = 0; i < moves.length; i++) {
 				var mv = moves[i];
+				var mover = state.turn;
 				var log = applyMove(state, mv.x, mv.y);
 				if (!log.ok) continue;
 
 				var capture = log.capturedCount > 0;
-				var childDepth = (capture && ext > 0) ? depth : depth - 1;
-				var childExt = (capture && ext > 0) ? ext - 1 : ext;
-				var reduce = (ctx.lmr !== false && !capture && depth >= 3 && searched >= 3)
+				var threat = (!capture && ext > 0 && ctx.threatExt > 0 && ply <= 8)
+					? createsThreat(state, mv.x, mv.y, mover) : false;
+				var forcing = (capture || threat) && ext > 0;
+				/* Late move pruning: at shallow depth the quiet moves far down the
+				   ordered list rarely matter — captures and threats come first. */
+				if (!forcing && ctx.lmp !== false && depth <= ctx.lmpDepth && searched >= ctx.lmpCount) {
+					undoMove(state, log);
+					break;
+				}
+				var childDepth = forcing ? depth : depth - 1;
+				var childExt = forcing ? ext - 1 : ext;
+				var reduce = (ctx.lmr !== false && !forcing && depth >= 3 && searched >= 3)
 					? (searched >= 8 && depth >= 6 ? 2 : 1) : 0;
 				var searchDepth = Math.max(1, childDepth - reduce);
 
