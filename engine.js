@@ -21,15 +21,24 @@
  * `bestMove` runs iterative-deepening alpha-beta (negamax with an explicit
  * maximizing/minimizing side, which handles the "extra move after a capture"
  * rule for free). It uses:
- *   - capture extensions, so forced capture chains are followed past the
- *     horizon;
- *   - move ordering (capture proximity, killers, history) and a node/time
- *     budget, so it deepens until the browser would otherwise stall;
- *   - a heuristic that scores material, connectivity, "freedom" (liberties)
- *     and encirclement pressure, so it both builds fortresses and defends.
+ *   - capture extensions and a quiescence search, so forced capture chains are
+ *     followed past the horizon instead of being cut off mid-fight;
+ *   - a transposition table, PVS, late-move reductions, and move ordering
+ *     (captures first, then killer/history/proximity), so it reaches real depth
+ *     within a tight time budget;
+ *   - a positional evaluation distilled from A. Priymak's manual: material
+ *     (prisoners), connected walls, group liberties ("freedom"), grounding on
+ *     the board edge, encirclement pressure, and the enemy mass sitting in
+ *     cramped groups one move from capture. This makes it build long walls, use
+ *     space, attack weak groups and defend its own;
+ *   - repetition detection, so a pointless loop is scored as a draw and the
+ *     engine plays for progress.
  * The game has no terminal state (the board never fills, the loser can always
  * play on), so "play to the end" is impossible by definition; iterative
  * deepening plus the budget is the practical maximum.
+ *
+ * Weights live in the mutable `W` table and can be overridden at runtime with
+ * `DotsEngine.setWeights({...})` (used by the self-play tuning harness).
  */
 (function (root) {
 	'use strict';
@@ -245,32 +254,49 @@
 		state.moveCount++;
 		state.lastMove = { x: x, y: y, player: player };
 
-		var comps = componentsFor(state, player);
+		/*
+		 * A capture requires the new dot to sit on a closed loop of the mover's
+		 * walls, so it must touch at least two of the mover's own dots. Without
+		 * that, no enclosure can be completed and the (expensive) flood fill is
+		 * skipped entirely — a large speed-up, since most placed dots have fewer
+		 * than two same-coloured neighbours.
+		 */
+		var same = 0;
+		for (var sdx = -1; sdx <= 1; sdx++) {
+			for (var sdy = -1; sdy <= 1; sdy++) {
+				if (sdx === 0 && sdy === 0) continue;
+				if (state.dots.get(key(x + sdx, y + sdy)) === player) same++;
+			}
+		}
+
 		var i, j;
-		for (i = 0; i < comps.length; i++) {
-			var comp = comps[i];
-			var enemies = [];
-			for (j = 0; j < comp.length; j++) {
-				if (state.dots.get(key(comp[j][0], comp[j][1])) === foe) enemies.push(comp[j]);
-			}
-			if (!enemies.length) continue;
-			for (j = 0; j < enemies.length; j++) {
-				var ek = key(enemies[j][0], enemies[j][1]);
-				var oldE = state.dots.get(ek);
-				var nvE = prisonerValue(foe);
-				var dE = hashDelta(ek, HASH_DOT, oldE, nvE);
-				state.h1 ^= dE[0]; state.h2 ^= dE[1];
-				log.dotChanges.push({ k: ek, old: oldE, hd: dE });
-				state.dots.set(ek, nvE);
-				log.captured.push({ x: enemies[j][0], y: enemies[j][1] });
-			}
-			for (j = 0; j < comp.length; j++) {
-				var ck = key(comp[j][0], comp[j][1]);
-				var oldC = state.claimed.get(ck);
-				var dC = hashDelta(ck, HASH_CLAIMED, oldC, player);
-				state.h1 ^= dC[0]; state.h2 ^= dC[1];
-				log.claimedChanges.push({ k: ck, old: oldC, hd: dC });
-				state.claimed.set(ck, player);
+		if (same >= 2) {
+			var comps = componentsFor(state, player);
+			for (i = 0; i < comps.length; i++) {
+				var comp = comps[i];
+				var enemies = [];
+				for (j = 0; j < comp.length; j++) {
+					if (state.dots.get(key(comp[j][0], comp[j][1])) === foe) enemies.push(comp[j]);
+				}
+				if (!enemies.length) continue;
+				for (j = 0; j < enemies.length; j++) {
+					var ek = key(enemies[j][0], enemies[j][1]);
+					var oldE = state.dots.get(ek);
+					var nvE = prisonerValue(foe);
+					var dE = hashDelta(ek, HASH_DOT, oldE, nvE);
+					state.h1 ^= dE[0]; state.h2 ^= dE[1];
+					log.dotChanges.push({ k: ek, old: oldE, hd: dE });
+					state.dots.set(ek, nvE);
+					log.captured.push({ x: enemies[j][0], y: enemies[j][1] });
+				}
+				for (j = 0; j < comp.length; j++) {
+					var ck = key(comp[j][0], comp[j][1]);
+					var oldC = state.claimed.get(ck);
+					var dC = hashDelta(ck, HASH_CLAIMED, oldC, player);
+					state.h1 ^= dC[0]; state.h2 ^= dC[1];
+					log.claimedChanges.push({ k: ck, old: oldC, hd: dC });
+					state.claimed.set(ck, player);
+				}
 			}
 		}
 
@@ -342,100 +368,226 @@
 	/* ==================================================================== AI */
 
 	/*
-	 * Static score of a position, from `ai`'s point of view.
-	 *   material   — captured prisoners (the win condition), dominant;
-	 *   structure  — connected dots are stronger than loose ones;
-	 *   freedom    — empty neighbours act as liberties; a dot with almost no
-	 *                freedom is one move away from being surrounded;
-	 *   pressure   — dots of mine crowding the enemy, minus enemy dots
-	 *                crowding mine.
+	 * Positional knowledge for "Точки", distilled from A. Priymak's manual:
+	 *
+	 *   structure (walls)  — connected dots are the unit of play. A long,
+	 *                        unbroken wall is strong; a lone, disconnected dot
+	 *                        is worth little. We reward own-own adjacencies.
+	 *   freedom (liberties)— a group with few reachable empty cells is cramped
+	 *                        and can be enclosed. Captures are resolved by the
+	 *                        search; the evaluation only has to rank the quiet
+	 *                        positions that lead to them.
+	 *   grounding          — a group touching the board edge cannot be enclosed
+	 *                        (the region beyond the edge is not captured), so
+	 *                        reaching the edge is valuable and attacking a
+	 *                        grounded wall is pointless.
+	 *   pressure           — crowding the enemy while staying connected attacks;
+	 *                        the same crowding of my dots is a threat.
+	 *   potential          — enemy mass sitting in a cramped, nearly enclosed
+	 *                        group is the best thing to aim at; the mirror case
+	 *                        (my own cramped mass) is the worst.
+	 *
+	 * Weights are tuned by self-play (see the benchmark harness).
 	 */
-	function evaluate(state, ai) {
-		var opp = other(ai);
-		var val = (state.score[ai] - state.score[opp]) * 100;
 
-		var ownConn = 0, oppConn = 0;
-		var ownFree = 0, oppFree = 0;
-		var ownTrap = 0, oppTrap = 0;
-		var pressure = 0, attacked = 0;
+	var W = {
+		score: 100,    /* captured prisoners — the win condition */
+		conn: 2.0,     /* own-own adjacencies (wall strength) */
+		free: 1.7,     /* reachable escape cells */
+		edge: 1.8,     /* dots grounded on the edge */
+		press: 3.0,    /* enemy dots crowded by my groups */
+		vuln: 6.0,     /* mass of a cramped enemy group (target) */
+		vulnOwn: 1.0,  /* mass of a cramped own group (risk) */
+		big: 1.5,      /* size of the largest connected wall */
+		tight: 6.0,    /* count of cramped enemy groups */
+		tightOwn: 1.0, /* count of cramped own groups */
+		atari: 20,     /* enemy groups one move from capture */
+		danger: 3      /* a group with fewer escapes than this is cramped */
+	};
 
-		state.dots.forEach(function (v, k) {
-			if (v !== P1 && v !== P2) return;
-			var p = parseKey(k);
-			var x = p[0], y = p[1];
-			var own = 0, foe = 0, free = 0;
-			for (var dx = -1; dx <= 1; dx++) {
-				for (var dy = -1; dy <= 1; dy++) {
-					if (dx === 0 && dy === 0) continue;
-					var nk = key(x + dx, y + dy);
-					var t = state.dots.get(nk);
-					if (t === v) own++;
-					else if (t === P1 || t === P2) foe++;
-					else if (!state.claimed.has(nk)) free++;
+	function setWeights(o) { if (o) for (var k in o) if (W[k] !== undefined) W[k] = o[k]; }
+
+	/*
+	 * Aggregate structural features for both sides in one pass over the dots.
+	 * A group is an 8-connected set of active dots of one player; `boundary` is
+	 * the number of distinct reachable empty cells around it (its liberties);
+	 * `contact` counts the enemy dots touching it.
+	 */
+	function analyzeBoth(state) {
+		var bounds = state.bounds;
+		var visited = new Set();
+		var mark = new Map();
+		var gid = 0;
+		var m = { size: 0, groups: 0, conn: 0, boundary: 0, contact: 0, grounded: 0, vuln: 0, big: 0, tight: 0, atari: 0 };
+		var o = { size: 0, groups: 0, conn: 0, boundary: 0, contact: 0, grounded: 0, vuln: 0, big: 0, tight: 0, atari: 0 };
+		var out = { 1: m, 2: o };
+
+		state.dots.forEach(function (v, k0) {
+			if ((v !== P1 && v !== P2) || visited.has(k0)) return;
+			var player = v, foe = other(player);
+			var R = out[player];
+			var stack = [k0];
+			visited.add(k0);
+			gid++;
+			var gsize = 0, gbound = 0, gcontact = 0, gground = false;
+			while (stack.length) {
+				var ck = stack.pop();
+				var p = parseKey(ck);
+				var x = p[0], y = p[1];
+				gsize++;
+				if (bounds && (x === bounds.x0 || x === bounds.x1 || y === bounds.y0 || y === bounds.y1)) gground = true;
+				for (var dx = -1; dx <= 1; dx++) {
+					for (var dy = -1; dy <= 1; dy++) {
+						if (dx === 0 && dy === 0) continue;
+						var nk = key(x + dx, y + dy);
+						var t = state.dots.get(nk);
+						if (t === player) {
+							R.conn++;
+							if (!visited.has(nk)) { visited.add(nk); stack.push(nk); }
+						} else if (t === undefined) {
+							if (!state.claimed.has(nk) && mark.get(nk) !== gid) { mark.set(nk, gid); gbound++; }
+						} else if (t === foe) {
+							gcontact++;
+						}
+					}
 				}
 			}
-			if (v === ai) {
-				ownConn += own; ownFree += free; pressure += foe;
-				if (free <= 1) ownTrap++;
-			} else {
-				oppConn += own; oppFree += free; attacked += foe;
-				if (free <= 1) oppTrap++;
+			R.boundary += gbound;
+			R.contact += gcontact;
+			R.size += gsize;
+			R.groups++;
+			if (gground) R.grounded += gsize;
+			else if (gbound < W.danger) {
+				R.tight++;
+				R.vuln += gsize * (W.danger - gbound);
+				if (gbound <= 1) R.atari++;
 			}
+			if (gsize > R.big) R.big = gsize;
 		});
+		return out;
+	}
 
-		val += (ownConn - oppConn) * 1.5;
-		val += (ownFree - oppFree) * 0.3;
-		val += (oppTrap - ownTrap) * 6;
-		val += (attacked - pressure) * 0.8;
+	function evaluate(state, ai) {
+		var r = analyzeBoth(state);
+		var m = r[ai], o = r[other(ai)];
+		var val = (state.score[ai] - state.score[other(ai)]) * W.score;
+		val += (m.conn - o.conn) * W.conn;
+		val += (m.boundary - o.boundary) * W.free;
+		val += (m.grounded - o.grounded) * W.edge;
+		val += (m.contact - o.contact) * W.press;
+		val += o.vuln * W.vuln - m.vuln * W.vulnOwn;
+		val += (m.big - o.big) * W.big;
+		val += o.tight * W.tight - m.tight * W.tightOwn;
+		val += (o.atari - m.atari) * W.atari;
 		return val;
 	}
 
-	/*
-	 * Order a candidate: crowding the enemy is attacking, staying near your own
-	 * dots builds walls. Killers and history from earlier cutoffs come first.
-	 */
+	/* ---- candidate offsets around a dot -------------------------------- */
+	/* RING1: the 8 neighbours. RING2FULL: the 16 cells at Chebyshev distance
+	   two. RING2AXIS: the 8 cells two steps out along an axis or diagonal,
+	   which is how a wall or an abstract chain is stretched forward. */
+
+	var RING1 = [], RING2FULL = [], RING2AXIS = [];
+	(function () {
+		for (var dx = -2; dx <= 2; dx++) {
+			for (var dy = -2; dy <= 2; dy++) {
+				if (dx === 0 && dy === 0) continue;
+				var d = Math.max(Math.abs(dx), Math.abs(dy));
+				if (d === 1) RING1.push([dx, dy]);
+				else if (d === 2) {
+					RING2FULL.push([dx, dy]);
+					if (Math.abs(dx) === 2 && Math.abs(dy) === 2) RING2AXIS.push([dx, dy]);
+					else if (dx === 0 || dy === 0) RING2AXIS.push([dx, dy]);
+				}
+			}
+		}
+	})();
+
 	function orderScore(state, x, y, side, ctx, ply) {
 		var score = 0;
 		var foe = other(side);
 		for (var dx = -2; dx <= 2; dx++) {
 			for (var dy = -2; dy <= 2; dy++) {
 				if (dx === 0 && dy === 0) continue;
-				var v = state.dots.get(key(x + dx, y + dy));
-				if (v === undefined) continue;
+				var t = state.dots.get(key(x + dx, y + dy));
+				if (t === undefined || isPrisoner(t)) continue;
 				var d = Math.max(Math.abs(dx), Math.abs(dy));
-				if (v === foe) score += (3 - d) * 3;
-				else if (v === side) score += (3 - d);
+				if (t === foe) score += (3 - d) * 4;
+				else if (t === side) score += (3 - d) * 2;
 			}
 		}
 		var kk = key(x, y);
 		var killers = ctx.killer[ply];
 		if (killers) {
-			if (killers[0] === kk) score += 40;
-			else if (killers[1] === kk) score += 30;
+			if (killers[0] === kk) score += 60;
+			else if (killers[1] === kk) score += 40;
 		}
 		score += (ctx.history[kk] || 0) * 0.01;
 		return score;
 	}
 
+	/*
+	 * Every move that captures right now. A capture needs an almost-closed wall
+	 * around an enemy group, so only the free cells touching a cramped enemy dot
+	 * are considered; each is verified by actually playing it.
+	 */
+	function captureMoves(state, maxFree, limit) {
+		var foe = other(state.turn);
+		var cand = new Set();
+		state.dots.forEach(function (v, k) {
+			if (v !== foe) return;
+			var p = parseKey(k);
+			var x = p[0], y = p[1];
+			var free = 0, cells = [];
+			for (var dx = -1; dx <= 1; dx++) {
+				for (var dy = -1; dy <= 1; dy++) {
+					if (dx === 0 && dy === 0) continue;
+					var nx = x + dx, ny = y + dy, nk = key(nx, ny);
+					var t = state.dots.get(nk);
+					if (t === undefined) { if (!state.claimed.has(nk)) { free++; cells.push([nx, ny]); } }
+				}
+			}
+			if (free <= maxFree) for (var i = 0; i < cells.length; i++) cand.add(key(cells[i][0], cells[i][1]));
+		});
+		var out = [];
+		cand.forEach(function (nk) {
+			var p = parseKey(nk);
+			var log = applyMove(state, p[0], p[1]);
+			if (log.ok) {
+				if (log.capturedCount > 0) out.push({ x: p[0], y: p[1], cap: log.capturedCount, s: 0 });
+				undoMove(state, log);
+			}
+		});
+		out.sort(function (a, b) { return b.cap - a.cap; });
+		if (out.length > limit) out.length = limit;
+		return out;
+	}
+
+	/*
+	 * Candidate moves: near every dot on the board, plus (when `detect`) every
+	 * capture, so the search never prunes a finishing move.
+	 */
 	function generateMoves(state, ctx, ply, cap, detect) {
 		var side = state.turn;
 		var cand = new Set();
+		var i;
+
+		function add(x, y) {
+			var nk = key(x, y);
+			if (cand.has(nk)) return;
+			if (!canPlace(state, x, y)) return;
+			cand.add(nk);
+		}
+
 		state.dots.forEach(function (v, k) {
 			if (v !== P1 && v !== P2) return;
 			var p = parseKey(k);
 			var x = p[0], y = p[1];
-			var r = (v === side) ? 1 : 2;
-			for (var dx = -r; dx <= r; dx++) {
-				for (var dy = -r; dy <= r; dy++) {
-					if (dx === 0 && dy === 0) continue;
-					var nx = x + dx, ny = y + dy;
-					var nk = key(nx, ny);
-					if (cand.has(nk)) continue;
-					if (!canPlace(state, nx, ny)) continue;
-					cand.add(nk);
-				}
-			}
+			for (i = 0; i < RING1.length; i++) add(x + RING1[i][0], y + RING1[i][1]);
+			var ring2 = (v === side) ? RING2AXIS : RING2FULL;
+			for (i = 0; i < ring2.length; i++) add(x + ring2[i][0], y + ring2[i][1]);
 		});
+
 		var arr = [];
 		cand.forEach(function (nk) {
 			var p = parseKey(nk);
@@ -444,29 +596,19 @@
 		arr.sort(function (a, b) { return b.s - a.s; });
 		var limit = cap === undefined ? ctx.maxMoves : cap;
 
-		/*
-		 * Capture-aware generation. Playing a move and looking at what it takes
-		 * is expensive, so it is done only where it matters most — at the very
-		 * first reply — and only for the top `captureScan` candidates. Every
-		 * capture found is kept even if it would not fit the move limit, so the
-		 * search never overlooks a capture by either side.
-		 */
-		if (detect && ctx.captureScan > 0 && arr.length) {
-			var scan = Math.min(arr.length, ctx.captureScan);
-			var caps = [], rest = [];
-			for (var i = 0; i < scan; i++) {
-				var mv = arr[i];
-				var log = applyMove(state, mv.x, mv.y);
-				if (!log.ok) continue;
-				if (log.capturedCount > 0) { mv.cap = log.capturedCount; caps.push(mv); }
-				else rest.push(mv);
-				undoMove(state, log);
+		if (detect && ctx.captureScan > 0) {
+			var caps = captureMoves(state, ctx.captureFree, ctx.captureScan);
+			if (caps.length) {
+				var seen = Object.create(null);
+				for (i = 0; i < caps.length; i++) seen[caps[i].x + ',' + caps[i].y] = 1;
+				var rest = [];
+				for (i = 0; i < arr.length; i++) {
+					if (!seen[arr[i].x + ',' + arr[i].y]) rest.push(arr[i]);
+				}
+				var out = caps.concat(rest);
+				if (out.length > limit) out.length = limit;
+				return out;
 			}
-			for (var j = scan; j < arr.length; j++) rest.push(arr[j]);
-			caps.sort(function (a, b) { return b.cap - a.cap; });
-			rest.sort(function (a, b) { return b.s - a.s; });
-			if (caps.length >= limit) return caps.slice(0, limit);
-			return caps.concat(rest.slice(0, limit - caps.length));
 		}
 
 		if (arr.length > limit) arr.length = limit;
@@ -474,17 +616,16 @@
 	}
 
 	/*
-	 * Root move list. Every candidate is played and unmade so that capturing
-	 * moves are identified and placed first — a finishing move can sit on the
-	 * far side of a large loop, far from the enemy, and static ordering alone
-	 * could drop it.
+	 * Root move list: wide generation, every candidate played once so that
+	 * captures are found even when the finishing move is far from the enemy.
 	 */
 	function rootMoves(state, ctx) {
-		var cands = generateMoves(state, ctx, 0, ctx.testCap);
+		var cands = generateMoves(state, ctx, 0, ctx.testCap, true);
 		var caps = [];
 		var rest = [];
 		for (var i = 0; i < cands.length; i++) {
 			var mv = cands[i];
+			if (mv.cap > 0) { caps.push(mv); continue; }
 			var log = applyMove(state, mv.x, mv.y);
 			if (!log.ok) continue;
 			if (log.capturedCount > 0) { mv.cap = log.capturedCount; caps.push(mv); }
@@ -500,14 +641,38 @@
 	}
 
 	/*
-	 * Alpha-beta search written as a generator so it can be paused between
-	 * slices of work (yield) and keep the page responsive even without a web
-	 * worker. `bestMove` drives it to completion in one go.
-	 *
-	 * It uses a transposition table (positions repeat because move order does
-	 * not matter) and a principal-variation search (PVS): only the first move
-	 * is searched with a full window, the rest with a null window and a
-	 * re-search when one unexpectedly improves.
+	 * Quiescence: at the horizon, keep taking captures instead of trusting a
+	 * static score in the middle of a fight. Stand-pat is the evaluation; only
+	 * real captures are searched, so this is cheap and never explodes.
+	 */
+	function* quiesce(state, alpha, beta, ctx, ply, qd) {
+		var stand = evaluate(state, ctx.ai);
+		if (qd <= 0) return stand;
+		var maximizing = (state.turn === ctx.ai);
+		if (maximizing) { if (stand >= beta) return stand; if (stand > alpha) alpha = stand; }
+		else { if (stand <= alpha) return stand; if (stand < beta) beta = stand; }
+
+		var caps = captureMoves(state, ctx.captureFree, ctx.qLimit);
+		if (!caps.length) return stand;
+		var best = stand;
+		for (var i = 0; i < caps.length; i++) {
+			var mv = caps[i];
+			var log = applyMove(state, mv.x, mv.y);
+			if (!log.ok) continue;
+			var v;
+			try { v = yield* quiesce(state, alpha, beta, ctx, ply + 1, qd - 1); }
+			finally { undoMove(state, log); }
+			if (maximizing) { if (v > best) best = v; if (best > alpha) alpha = best; if (alpha >= beta) break; }
+			else { if (v < best) best = v; if (best < beta) beta = best; if (alpha >= beta) break; }
+		}
+		return best;
+	}
+
+	/*
+	 * Alpha-beta search written as a generator so it can be paused and keep the
+	 * page responsive. Transposition table + PVS + late-move reductions. A
+	 * position repeated on the current path is a draw (the game has no terminal
+	 * state, so this is what makes the engine avoid pointless loops).
 	 */
 	function* searchGen(state, depth, alpha, beta, ctx, ply, ext) {
 		ctx.nodes++;
@@ -515,109 +680,143 @@
 			if (now() > ctx.deadline) throw TIMEOUT;
 			yield;
 		}
-		if (depth <= 0) return evaluate(state, ctx.ai);
+		if (depth <= 0) return yield* quiesce(state, alpha, beta, ctx, ply, ctx.qMax);
 
-		var ttKey = null, ttEntry = null;
-		if (ctx.tt) {
-			ttKey = positionKey(state);
-			ttEntry = ctx.tt.get(ttKey) || null;
-			if (ttEntry && ttEntry.depth >= depth) {
-				if (ttEntry.flag === TT_EXACT) return ttEntry.score;
-				if (ttEntry.flag === TT_LOWER && ttEntry.score >= beta) return ttEntry.score;
-				if (ttEntry.flag === TT_UPPER && ttEntry.score <= alpha) return ttEntry.score;
-			}
+		var pk = positionKey(state);
+		var repAdded = false;
+		if (ctx.repSet) {
+			if (ctx.repSet.has(pk)) return 0;
+			ctx.repSet.add(pk);
+			repAdded = true;
 		}
 
-		var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
-		if (!moves.length) return evaluate(state, ctx.ai);
+		try {
+			var ttKey = null, ttEntry = null;
+			if (ctx.tt) {
+				ttKey = pk;
+				ttEntry = ctx.tt.get(ttKey) || null;
+				if (ttEntry && ttEntry.depth >= depth) {
+					if (ttEntry.flag === TT_EXACT) return ttEntry.score;
+					if (ttEntry.flag === TT_LOWER && ttEntry.score >= beta) return ttEntry.score;
+					if (ttEntry.flag === TT_UPPER && ttEntry.score <= alpha) return ttEntry.score;
+				}
+			}
 
-		if (ttEntry && ttEntry.x !== null && ttEntry.x !== undefined) {
-			for (var t = 1; t < moves.length; t++) {
-				if (moves[t].x === ttEntry.x && moves[t].y === ttEntry.y) {
-					var first = moves[t];
-					moves[t] = moves[0];
-					moves[0] = first;
+			var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
+			if (!moves.length) return evaluate(state, ctx.ai);
+
+			if (ttEntry && ttEntry.x !== null && ttEntry.x !== undefined) {
+				for (var t = 1; t < moves.length; t++) {
+					if (moves[t].x === ttEntry.x && moves[t].y === ttEntry.y) {
+						var first = moves[t];
+						moves[t] = moves[0];
+						moves[0] = first;
+						break;
+					}
+				}
+			}
+
+			var maximizing = (state.turn === ctx.ai);
+			var origAlpha = alpha, origBeta = beta;
+			var best = maximizing ? -Infinity : Infinity;
+			var localBest = null;
+			var searched = 0;
+
+			for (var i = 0; i < moves.length; i++) {
+				var mv = moves[i];
+				var log = applyMove(state, mv.x, mv.y);
+				if (!log.ok) continue;
+
+				var capture = log.capturedCount > 0;
+				var childDepth = (capture && ext > 0) ? depth : depth - 1;
+				var childExt = (capture && ext > 0) ? ext - 1 : ext;
+
+				var reduce = (ctx.lmr !== false && !capture && depth >= 3 && searched >= 3)
+					? (searched >= 8 && depth >= 6 ? 2 : 1) : 0;
+				var searchDepth = Math.max(1, childDepth - reduce);
+
+				var v;
+				try {
+					if (reduce > 0) {
+						if (maximizing) {
+							v = yield* searchGen(state, searchDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+							if (v > alpha) v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						} else {
+							v = yield* searchGen(state, searchDepth, beta - 1, beta, ctx, ply + 1, childExt);
+							if (v < beta) v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						}
+					} else if (searched === 0 || !ctx.pvs) {
+						v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+					} else if (maximizing) {
+						v = yield* searchGen(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+						if (v > alpha && v < beta) {
+							v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						}
+					} else {
+						v = yield* searchGen(state, childDepth, beta - 1, beta, ctx, ply + 1, childExt);
+						if (v < beta && v > alpha) {
+							v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						}
+					}
+				} finally {
+					undoMove(state, log);
+				}
+				searched++;
+
+				if (maximizing) {
+					if (v > best) { best = v; localBest = mv; }
+					if (best > alpha) alpha = best;
+				} else {
+					if (v < best) { best = v; localBest = mv; }
+					if (best < beta) beta = best;
+				}
+				if (alpha >= beta) {
+					if (localBest) {
+						var kk = key(localBest.x, localBest.y);
+						ctx.history[kk] = (ctx.history[kk] || 0) + depth * depth;
+						var kl = ctx.killer[ply] || (ctx.killer[ply] = [null, null]);
+						if (kl[0] !== kk) { kl[1] = kl[0]; kl[0] = kk; }
+					}
 					break;
 				}
 			}
-		}
 
-		var maximizing = (state.turn === ctx.ai);
-		var origAlpha = alpha, origBeta = beta;
-		var best = maximizing ? -Infinity : Infinity;
-		var localBest = null;
-		var searched = 0;
-
-		for (var i = 0; i < moves.length; i++) {
-			var mv = moves[i];
-			var log = applyMove(state, mv.x, mv.y);
-			if (!log.ok) continue;
-
-			var capture = log.capturedCount > 0;
-			var childDepth = (capture && ext > 0) ? depth : depth - 1;
-			var childExt = (capture && ext > 0) ? ext - 1 : ext;
-
-			/* late-move reductions: quiet moves far down the list get a
-			   shallower/null-window search, re-searched only if they improve */
-			var reduce = (ctx.lmr !== false && !capture && depth >= 3 && searched >= 3)
-				? (searched >= 8 && depth >= 6 ? 2 : 1) : 0;
-			var searchDepth = Math.max(1, childDepth - reduce);
-
-			var v;
-			try {
-				if (reduce > 0) {
-					if (maximizing) {
-						v = yield* searchGen(state, searchDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
-						if (v > alpha) v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
-					} else {
-						v = yield* searchGen(state, searchDepth, beta - 1, beta, ctx, ply + 1, childExt);
-						if (v < beta) v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
-					}
-				} else if (searched === 0 || !ctx.pvs) {
-					v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
-				} else if (maximizing) {
-					v = yield* searchGen(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
-					if (v > alpha && v < beta) {
-						v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
-					}
-				} else {
-					v = yield* searchGen(state, childDepth, beta - 1, beta, ctx, ply + 1, childExt);
-					if (v < beta && v > alpha) {
-						v = yield* searchGen(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
-					}
-				}
-			} finally {
-				undoMove(state, log);
+			if (ttKey && ctx.tt) {
+				var flag = best <= origAlpha ? TT_UPPER : (best >= origBeta ? TT_LOWER : TT_EXACT);
+				ctx.tt.set(ttKey, {
+					depth: depth, flag: flag, score: best,
+					x: localBest ? localBest.x : null, y: localBest ? localBest.y : null
+				});
+				if (ctx.tt.size > ctx.ttMax) ctx.tt.clear();
 			}
-			searched++;
-
-			if (maximizing) {
-				if (v > best) { best = v; localBest = mv; }
-				if (best > alpha) alpha = best;
-			} else {
-				if (v < best) { best = v; localBest = mv; }
-				if (best < beta) beta = best;
-			}
-			if (alpha >= beta) {
-				if (localBest) {
-					var kk = key(localBest.x, localBest.y);
-					ctx.history[kk] = (ctx.history[kk] || 0) + depth * depth;
-					var kl = ctx.killer[ply] || (ctx.killer[ply] = [null, null]);
-					if (kl[0] !== kk) { kl[1] = kl[0]; kl[0] = kk; }
-				}
-				break;
-			}
+			return best;
+		} finally {
+			if (repAdded) ctx.repSet.delete(pk);
 		}
+	}
 
-		if (ttKey && ctx.tt) {
-			var flag = best <= origAlpha ? TT_UPPER : (best >= origBeta ? TT_LOWER : TT_EXACT);
-			ctx.tt.set(ttKey, {
-				depth: depth, flag: flag, score: best,
-				x: localBest ? localBest.x : null, y: localBest ? localBest.y : null
-			});
-			if (ctx.tt.size > ctx.ttMax) ctx.tt.clear();
-		}
-		return best;
+	function makeCtx(player, options) {
+		options = options || {};
+		return {
+			nodes: 0,
+			deadline: now() + (options.timeBudget || 800),
+			maxMoves: options.maxMoves || 14,
+			testCap: options.testCap || 400,
+			rootLimit: options.rootLimit || 40,
+			tacticalScan: options.tacticalScan || 0,
+			captureScan: options.captureScan || 0,
+			captureFree: options.captureFree === undefined ? 6 : options.captureFree,
+			qMax: options.qMax === undefined ? 5 : options.qMax,
+			qLimit: options.qLimit || 20,
+			tt: options.tt === false ? null : new Map(),
+			ttMax: options.ttMax || 200000,
+			pvs: options.pvs !== false,
+			lmr: options.lmr !== false,
+			repSet: new Set(options.seen || []),
+			ai: player,
+			history: Object.create(null),
+			killer: []
+		};
 	}
 
 	/*
@@ -626,24 +825,8 @@
 	 * the main thread is never blocked for long.
 	 */
 	function* bestMoveGen(state, player, options) {
-		options = options || {};
-		var timeBudget = options.timeBudget || 800;
-		var maxDepth = options.maxDepth || 6;
-		var ctx = {
-			nodes: 0,
-			deadline: now() + timeBudget,
-			maxMoves: options.maxMoves || 14,
-			testCap: options.testCap || 400,
-			rootLimit: options.rootLimit || 40,
-			tacticalScan: options.tacticalScan || 0,
-			captureScan: options.captureScan || 0,
-			tt: options.tt === false ? null : new Map(),
-			ttMax: options.ttMax || 200000,
-			pvs: options.pvs !== false,
-			ai: player,
-			history: Object.create(null),
-			killer: []
-		};
+		var maxDepth = (options && options.maxDepth) || 6;
+		var ctx = makeCtx(player, options);
 
 		var moves = rootMoves(state, ctx);
 		if (!moves.length) {
@@ -660,9 +843,10 @@
 		var best = { x: moves[0].x, y: moves[0].y };
 		var bestScore = -Infinity;
 		var timedOut = false;
+		var stable = 0;
+		var stableNeed = (options && options.stable) || 0;
 
 		for (var depth = 2; depth <= maxDepth && !timedOut; depth++) {
-			/* previous iteration's best move goes first */
 			if (ctx.tt) {
 				var rootE = ctx.tt.get(positionKey(state));
 				if (rootE && rootE.x !== null && rootE.x !== undefined) {
@@ -710,6 +894,7 @@
 			}
 
 			if (localBest) {
+				if (localBest.x === best.x && localBest.y === best.y) stable++; else stable = 0;
 				best = { x: localBest.x, y: localBest.y };
 				bestScore = localScore;
 				if (ctx.tt) {
@@ -718,7 +903,6 @@
 						x: localBest.x, y: localBest.y
 					});
 				}
-				/* best-first ordering for the next, deeper iteration */
 				moves.sort(function (a, b) {
 					if (a === localBest) return -1;
 					if (b === localBest) return 1;
@@ -726,17 +910,253 @@
 				});
 			}
 			if (timedOut) break;
+			if (stableNeed && stable >= stableNeed && depth >= 4) break;
 		}
 
 		return best;
 	}
 
-	/* Synchronous wrapper: drives the generator to completion. */
+	/*
+	 * Synchronous search (no generators). This is the path used by the worker
+	 * and by any caller that does not need to yield to the UI, and it is
+	 * markedly faster than driving a generator node by node. The generator
+	 * versions above remain for the no-worker cooperative fallback.
+	 */
+	function quiesceSync(state, alpha, beta, ctx, ply, qd) {
+		var stand = evaluate(state, ctx.ai);
+		if (qd <= 0) return stand;
+		var maximizing = (state.turn === ctx.ai);
+		if (maximizing) { if (stand >= beta) return stand; if (stand > alpha) alpha = stand; }
+		else { if (stand <= alpha) return stand; if (stand < beta) beta = stand; }
+		var caps = captureMoves(state, ctx.captureFree, ctx.qLimit);
+		if (!caps.length) return stand;
+		var best = stand;
+		for (var i = 0; i < caps.length; i++) {
+			var mv = caps[i];
+			var log = applyMove(state, mv.x, mv.y);
+			if (!log.ok) continue;
+			var v;
+			try { v = quiesceSync(state, alpha, beta, ctx, ply + 1, qd - 1); }
+			finally { undoMove(state, log); }
+			if (maximizing) { if (v > best) best = v; if (best > alpha) alpha = best; if (alpha >= beta) break; }
+			else { if (v < best) best = v; if (best < beta) beta = best; if (alpha >= beta) break; }
+		}
+		return best;
+	}
+
+	function searchSync(state, depth, alpha, beta, ctx, ply, ext) {
+		ctx.nodes++;
+		if ((ctx.nodes & 255) === 0 && now() > ctx.deadline) throw TIMEOUT;
+		if (depth <= 0) return quiesceSync(state, alpha, beta, ctx, ply, ctx.qMax);
+
+		var pk = positionKey(state);
+		var repAdded = false;
+		if (ctx.repSet) {
+			if (ctx.repSet.has(pk)) return 0;
+			ctx.repSet.add(pk);
+			repAdded = true;
+		}
+
+		try {
+			var ttKey = null, ttEntry = null;
+			if (ctx.tt) {
+				ttKey = pk;
+				ttEntry = ctx.tt.get(ttKey) || null;
+				if (ttEntry && ttEntry.depth >= depth) {
+					if (ttEntry.flag === TT_EXACT) return ttEntry.score;
+					if (ttEntry.flag === TT_LOWER && ttEntry.score >= beta) return ttEntry.score;
+					if (ttEntry.flag === TT_UPPER && ttEntry.score <= alpha) return ttEntry.score;
+				}
+			}
+
+			var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
+			if (!moves.length) return evaluate(state, ctx.ai);
+
+			if (ttEntry && ttEntry.x !== null && ttEntry.x !== undefined) {
+				for (var t = 1; t < moves.length; t++) {
+					if (moves[t].x === ttEntry.x && moves[t].y === ttEntry.y) {
+						var first = moves[t];
+						moves[t] = moves[0];
+						moves[0] = first;
+						break;
+					}
+				}
+			}
+
+			var maximizing = (state.turn === ctx.ai);
+			var origAlpha = alpha, origBeta = beta;
+			var best = maximizing ? -Infinity : Infinity;
+			var localBest = null;
+			var searched = 0;
+
+			for (var i = 0; i < moves.length; i++) {
+				var mv = moves[i];
+				var log = applyMove(state, mv.x, mv.y);
+				if (!log.ok) continue;
+
+				var capture = log.capturedCount > 0;
+				var childDepth = (capture && ext > 0) ? depth : depth - 1;
+				var childExt = (capture && ext > 0) ? ext - 1 : ext;
+				var reduce = (ctx.lmr !== false && !capture && depth >= 3 && searched >= 3)
+					? (searched >= 8 && depth >= 6 ? 2 : 1) : 0;
+				var searchDepth = Math.max(1, childDepth - reduce);
+
+				var v;
+				try {
+					if (reduce > 0) {
+						if (maximizing) {
+							v = searchSync(state, searchDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+							if (v > alpha) v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						} else {
+							v = searchSync(state, searchDepth, beta - 1, beta, ctx, ply + 1, childExt);
+							if (v < beta) v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						}
+					} else if (searched === 0 || !ctx.pvs) {
+						v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+					} else if (maximizing) {
+						v = searchSync(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+						if (v > alpha && v < beta) {
+							v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						}
+					} else {
+						v = searchSync(state, childDepth, beta - 1, beta, ctx, ply + 1, childExt);
+						if (v < beta && v > alpha) {
+							v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						}
+					}
+				} finally {
+					undoMove(state, log);
+				}
+				searched++;
+
+				if (maximizing) {
+					if (v > best) { best = v; localBest = mv; }
+					if (best > alpha) alpha = best;
+				} else {
+					if (v < best) { best = v; localBest = mv; }
+					if (best < beta) beta = best;
+				}
+				if (alpha >= beta) {
+					if (localBest) {
+						var kk = key(localBest.x, localBest.y);
+						ctx.history[kk] = (ctx.history[kk] || 0) + depth * depth;
+						var kl = ctx.killer[ply] || (ctx.killer[ply] = [null, null]);
+						if (kl[0] !== kk) { kl[1] = kl[0]; kl[0] = kk; }
+					}
+					break;
+				}
+			}
+
+			if (ttKey && ctx.tt) {
+				var flag = best <= origAlpha ? TT_UPPER : (best >= origBeta ? TT_LOWER : TT_EXACT);
+				ctx.tt.set(ttKey, {
+					depth: depth, flag: flag, score: best,
+					x: localBest ? localBest.x : null, y: localBest ? localBest.y : null
+				});
+				if (ctx.tt.size > ctx.ttMax) ctx.tt.clear();
+			}
+			return best;
+		} finally {
+			if (repAdded) ctx.repSet.delete(pk);
+		}
+	}
+
+	/*
+	 * Iterative-deepening alpha-beta (synchronous). Returns { x, y } or null.
+	 * `timeBudget` is a soft cap in milliseconds; `maxDepth`/`maxMoves` bound the
+	 * search. `stable` (if set) stops early once the best move has not changed
+	 * for that many iterations, which trims the wait on obvious moves.
+	 */
 	function bestMove(state, player, options) {
-		var it = bestMoveGen(state, player, options);
-		var step = it.next();
-		while (!step.done) step = it.next();
-		return step.value;
+		var maxDepth = (options && options.maxDepth) || 6;
+		var ctx = makeCtx(player, options);
+
+		var moves = rootMoves(state, ctx);
+		if (!moves.length) {
+			if (state.dots.size) return null;
+			if (state.bounds) {
+				return {
+					x: Math.floor((state.bounds.x0 + state.bounds.x1) / 2),
+					y: Math.floor((state.bounds.y0 + state.bounds.y1) / 2)
+				};
+			}
+			return { x: 0, y: 0 };
+		}
+
+		var best = { x: moves[0].x, y: moves[0].y };
+		var bestScore = -Infinity;
+		var timedOut = false;
+		var stable = 0;
+		var stableNeed = (options && options.stable) || 0;
+
+		for (var depth = 2; depth <= maxDepth && !timedOut; depth++) {
+			if (ctx.tt) {
+				var rootE = ctx.tt.get(positionKey(state));
+				if (rootE && rootE.x !== null && rootE.x !== undefined) {
+					for (var r = 1; r < moves.length; r++) {
+						if (moves[r].x === rootE.x && moves[r].y === rootE.y) {
+							var tmp = moves[r]; moves[r] = moves[0]; moves[0] = tmp;
+							break;
+						}
+					}
+				}
+			}
+			var alpha = -Infinity;
+			var localBest = null;
+			var localScore = -Infinity;
+			var rsearched = 0;
+
+			for (var i = 0; i < moves.length; i++) {
+				var mv = moves[i];
+				var log = applyMove(state, mv.x, mv.y);
+				if (!log.ok) continue;
+
+				var capture = log.capturedCount > 0;
+				var childDepth = capture ? depth : depth - 1;
+				var v;
+				try {
+					if (rsearched === 0 || !ctx.pvs) {
+						v = searchSync(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+					} else {
+						v = searchSync(state, childDepth, alpha, alpha + 1, ctx, 1, capture ? 2 : 3);
+						if (v > alpha) {
+							v = searchSync(state, childDepth, alpha, Infinity, ctx, 1, capture ? 2 : 3);
+						}
+					}
+				} catch (e) {
+					if (e === TIMEOUT) { timedOut = true; break; }
+					throw e;
+				} finally {
+					undoMove(state, log);
+				}
+				rsearched++;
+
+				if (v > localScore) { localScore = v; localBest = mv; }
+				if (localScore > alpha) alpha = localScore;
+				if (now() > ctx.deadline) { timedOut = true; break; }
+			}
+
+			if (localBest) {
+				if (localBest.x === best.x && localBest.y === best.y) stable++; else stable = 0;
+				best = { x: localBest.x, y: localBest.y };
+				bestScore = localScore;
+				if (ctx.tt) {
+					ctx.tt.set(positionKey(state), {
+						depth: depth, flag: TT_EXACT, score: localScore,
+						x: localBest.x, y: localBest.y
+					});
+				}
+				moves.sort(function (a, b) {
+					if (a === localBest) return -1;
+					if (b === localBest) return 1;
+					return b.s - a.s;
+				});
+			}
+			if (timedOut) break;
+			if (stableNeed && stable >= stableNeed && depth >= 4) break;
+		}
+
+		return best;
 	}
 
 	/*
@@ -746,25 +1166,9 @@
 	 * move among the best few.
 	 */
 	function* bestMovesGen(state, player, options, count) {
-		options = options || {};
 		count = Math.max(1, count || 1);
-		var timeBudget = options.timeBudget || 800;
-		var maxDepth = options.maxDepth || 6;
-		var ctx = {
-			nodes: 0,
-			deadline: now() + timeBudget,
-			maxMoves: options.maxMoves || 14,
-			testCap: options.testCap || 400,
-			rootLimit: options.rootLimit || 40,
-			tacticalScan: options.tacticalScan || 0,
-			captureScan: options.captureScan || 0,
-			tt: options.tt === false ? null : new Map(),
-			ttMax: options.ttMax || 200000,
-			pvs: options.pvs !== false,
-			ai: player,
-			history: Object.create(null),
-			killer: []
-		};
+		var maxDepth = (options && options.maxDepth) || 6;
+		var ctx = makeCtx(player, options);
 
 		var moves = rootMoves(state, ctx);
 		if (!moves.length) {
@@ -804,7 +1208,6 @@
 			if (stop) break;
 			ranked = moves.map(function (m, idx) { return { x: m.x, y: m.y, score: scores[idx] }; });
 			ranked.sort(function (a, b) { return b.score - a.score; });
-			/* carry the ranking into the next, deeper iteration */
 			var order = Object.create(null);
 			ranked.forEach(function (r, idx) { order[r.x + ',' + r.y] = idx; });
 			moves.sort(function (a, b) {
@@ -846,6 +1249,8 @@
 		prisonerCount: prisonerCount,
 		isGameOver: isGameOver,
 		evaluate: evaluate,
+		setWeights: setWeights,
+		hash: positionKey,
 		bestMove: bestMove,
 		bestMoves: bestMoves,
 		bestMoveGen: bestMoveGen,

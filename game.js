@@ -34,28 +34,42 @@
 	}
 
 	/*
-	 * Bot presets. Every level searches roughly three times deeper and wider
-	 * than before and never plays a deliberately random move: the computer
-	 * always commits to the move it believes is best, so the whole search is
-	 * aimed at winning. `tacticalScan` and `captureScan` make it look at
-	 * captures in the first reply, so it never overlooks a capture by either
-	 * side.
+	 * Bot presets. Every level searches deeper and wider than the previous one
+	 * and never plays a deliberately random move: the computer always commits to
+	 * the move it believes is best, so the whole search is aimed at winning.
+	 *
+	 * Options beyond the time/depth budget:
+	 *   tacticalScan / captureScan — how eagerly captures are detected inside
+	 *     the tree (targeted capture scan on the first replies);
+	 *   captureFree — a group with at most this many liberties is "cramped" and
+	 *     its enclosing cells are examined for captures;
+	 *   qMax / qLimit — depth and width of the quiescence (capture) search.
+	 * "Сложный" is meant to be genuinely strong; raise timeBudget further on a
+	 * fast machine, or lower it if the wait feels long.
 	 */
 	var DIFFICULTY = {
-		easy: { timeBudget: 2100, maxDepth: 7, maxMoves: 16, rootLimit: 70, tacticalScan: 1, captureScan: 40 },
-		medium: { timeBudget: 4500, maxDepth: 13, maxMoves: 30, rootLimit: 100, tacticalScan: 1, captureScan: 76 },
-		hard: { timeBudget: 16000, maxDepth: 22, maxMoves: 56, rootLimit: 190, tacticalScan: 1, captureScan: 120 }
+		easy: {
+			timeBudget: 1200, maxDepth: 9, maxMoves: 16, rootLimit: 70,
+			tacticalScan: 1, captureScan: 40, captureFree: 6, qMax: 3, qLimit: 12, stable: 2
+		},
+		medium: {
+			timeBudget: 3200, maxDepth: 30, maxMoves: 28, rootLimit: 120,
+			tacticalScan: 2, captureScan: 70, captureFree: 6, qMax: 5, qLimit: 20, stable: 3
+		},
+		hard: {
+			timeBudget: 8000, maxDepth: 48, maxMoves: 40, rootLimit: 170,
+			tacticalScan: 2, captureScan: 130, captureFree: 6, qMax: 6, qLimit: 28, stable: 3
+		}
 	};
 
 	/*
-	 * Anti-repetition safety valve. On an endless board a deadlock can repeat
-	 * forever: the human has a single move that avoids capture and the computer
-	 * a single move that keeps the threat, so nothing ever changes. If the
-	 * computer goes this many of its own moves in a row without anyone being
-	 * captured, it stops insisting on the top move and plays its second-best
-	 * one, which breaks the loop and lets the game progress.
+	 * Repetition is handled inside the search: the engine is told which
+	 * positions already occurred in the game (see `seen`) and scores returning
+	 * to one as a draw, so it keeps making progress instead of shuffling. This
+	 * counter is only a last-resort safety valve for a true deadlock; it is set
+	 * high so it never weakens ordinary play.
 	 */
-	var REPEAT_AFTER = 10;
+	var REPEAT_AFTER = 999;
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 	var DIFFICULTY_NAMES = { easy: 'Лёгкий', medium: 'Средний', hard: 'Сложный' };
@@ -74,6 +88,7 @@
 		scene: { edges: [] },
 		state: null,
 		history: [],
+		positionHashes: [],
 		mode: 'pvp',
 		started: false,
 		size: 'infinite',
@@ -955,7 +970,8 @@
 		ui.history.push({
 			state: E.clone(ui.state),
 			scene: { edges: ui.scene.edges.slice() },
-			ended: ui.ended
+			ended: ui.ended,
+			hashes: ui.positionHashes.slice()
 		});
 	}
 
@@ -963,6 +979,7 @@
 		ui.state = entry.state;
 		ui.scene = entry.scene;
 		ui.ended = entry.ended;
+		ui.positionHashes = entry.hashes ? entry.hashes.slice() : [];
 	}
 
 	function commitMove(x, y) {
@@ -970,6 +987,8 @@
 		var player = ui.state.turn;
 		var res = E.place(ui.state, x, y);
 		if (!res.ok) { ui.history.pop(); return; }
+		ui.positionHashes.push(E.hash(ui.state));
+		if (ui.positionHashes.length > 400) ui.positionHashes.shift();
 		if (ui.mode === 'bot' && res.player === 2) ui.botMoves += 1;
 		/* Count the computer's fruitless moves so a repeating deadlock is
 		   broken instead of running forever; any capture resets the count. */
@@ -1089,6 +1108,7 @@
 	function newGame() {
 		ui.state = E.createGame({ extraTurn: false, bounds: boundsForSize(ui.size) });
 		ui.history = [];
+		ui.positionHashes = [];
 		ui.ended = false;
 		ui.thinking = false;
 		ui.botRequestId += 1;
@@ -1272,15 +1292,23 @@
 		commitMove(move.x, move.y);
 	}
 
-	function requestBotMove(preset) {
-		var options = {
+	function botOptions(preset) {
+		return {
 			timeBudget: preset.timeBudget,
 			maxDepth: preset.maxDepth,
 			maxMoves: preset.maxMoves,
 			rootLimit: preset.rootLimit,
 			tacticalScan: preset.tacticalScan,
-			captureScan: preset.captureScan
+			captureScan: preset.captureScan,
+			captureFree: preset.captureFree,
+			qMax: preset.qMax,
+			qLimit: preset.qLimit,
+			seen: ui.positionHashes
 		};
+	}
+
+	function requestBotMove(preset) {
+		var options = botOptions(preset);
 		/* Break a repeating, capture-less deadlock by trying the runner-up. */
 		ui.botAlt = ui.botQuiet >= REPEAT_AFTER;
 		if (ui.botAlt) ui.botQuiet = 0;
@@ -1316,14 +1344,7 @@
 	 * It searches a clone, so the live board stays untouched while it thinks.
 	 */
 	function runBotSearchCooperative(preset, count) {
-		var options = {
-			timeBudget: preset.timeBudget,
-			maxDepth: preset.maxDepth,
-			maxMoves: preset.maxMoves,
-			rootLimit: preset.rootLimit,
-			tacticalScan: preset.tacticalScan,
-			captureScan: preset.captureScan
-		};
+		var options = botOptions(preset);
 		var clone = E.clone(ui.state);
 		var gen = (count <= 1) ? E.bestMoveGen(clone, 2, options) : E.bestMovesGen(clone, 2, options, count);
 		var reqId = ui.botRequestId;
