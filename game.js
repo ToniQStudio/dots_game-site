@@ -68,16 +68,16 @@
 	 */
 	var DIFFICULTY = {
 		easy: {
-			timeBudget: 1200, maxDepth: 9, maxMoves: 16, rootLimit: 70,
+			timeBudget: 1500, maxDepth: 10, maxMoves: 16, rootLimit: 70,
 			tacticalScan: 1, captureScan: 40, captureFree: 6, qMax: 3, qLimit: 12, stable: 2
 		},
 		medium: {
-			timeBudget: 3200, maxDepth: 30, maxMoves: 28, rootLimit: 120,
-			tacticalScan: 2, captureScan: 70, captureFree: 6, qMax: 5, qLimit: 20, stable: 3
+			timeBudget: 4500, maxDepth: 40, maxMoves: 26, rootLimit: 120,
+			tacticalScan: 2, captureScan: 80, captureFree: 6, qMax: 5, qLimit: 22, stable: 3
 		},
 		hard: {
-			timeBudget: 8000, maxDepth: 48, maxMoves: 40, rootLimit: 170,
-			tacticalScan: 2, captureScan: 130, captureFree: 6, qMax: 6, qLimit: 28, stable: 3
+			timeBudget: 14000, maxDepth: 70, maxMoves: 32, rootLimit: 150,
+			tacticalScan: 2, captureScan: 140, captureFree: 6, qMax: 6, qLimit: 30, stable: 3
 		}
 	};
 

@@ -571,14 +571,13 @@
 	function orderScore(state, x, y, side, ctx, ply) {
 		var score = 0;
 		var foe = other(side);
-		for (var dx = -2; dx <= 2; dx++) {
-			for (var dy = -2; dy <= 2; dy++) {
+		for (var dx = -1; dx <= 1; dx++) {
+			for (var dy = -1; dy <= 1; dy++) {
 				if (dx === 0 && dy === 0) continue;
 				var t = state.dots.get(key(x + dx, y + dy));
 				if (t === undefined || isPrisoner(t)) continue;
-				var d = Math.max(Math.abs(dx), Math.abs(dy));
-				if (t === foe) score += (3 - d) * 4;
-				else if (t === side) score += (3 - d) * 2;
+				if (t === foe) score += 6;
+				else if (t === side) score += 3;
 			}
 		}
 		var kk = key(x, y);
@@ -594,10 +593,13 @@
 	/*
 	 * Every move that captures right now. A capture needs an almost-closed wall
 	 * around an enemy group, so only the free cells touching a cramped enemy dot
-	 * are considered; each is verified by actually playing it.
+	 * are considered; each is verified by actually playing it. A finishing dot
+	 * must touch at least two of the mover's own dots (it lies on the closing
+	 * loop), which cheaply rejects the vast majority before the flood fill.
 	 */
 	function captureMoves(state, maxFree, limit) {
-		var foe = other(state.turn);
+		var side = state.turn;
+		var foe = other(side);
 		var cand = new Set();
 		state.dots.forEach(function (v, k) {
 			if (v !== foe) return;
@@ -609,17 +611,26 @@
 					if (dx === 0 && dy === 0) continue;
 					var nx = x + dx, ny = y + dy, nk = key(nx, ny);
 					var t = state.dots.get(nk);
-					if (t === undefined) { if (!state.claimed.has(nk)) { free++; cells.push([nx, ny]); } }
+					if (t === undefined) { if (!state.claimed.has(nk)) { free++; cells.push(nx, ny); } }
 				}
 			}
-			if (free <= maxFree) for (var i = 0; i < cells.length; i++) cand.add(key(cells[i][0], cells[i][1]));
+			if (free <= maxFree) for (var i = 0; i < cells.length; i += 2) cand.add(key(cells[i], cells[i + 1]));
 		});
 		var out = [];
 		cand.forEach(function (nk) {
 			var p = parseKey(nk);
-			var log = applyMove(state, p[0], p[1]);
+			var x = p[0], y = p[1];
+			var own = 0;
+			for (var dx = -1; dx <= 1 && own < 2; dx++) {
+				for (var dy = -1; dy <= 1; dy++) {
+					if (dx === 0 && dy === 0) continue;
+					if (state.dots.get(key(x + dx, y + dy)) === side) { own++; if (own >= 2) break; }
+				}
+			}
+			if (own < 2) return;
+			var log = applyMove(state, x, y);
 			if (log.ok) {
-				if (log.capturedCount > 0) out.push({ x: p[0], y: p[1], cap: log.capturedCount, s: 0 });
+				if (log.capturedCount > 0) out.push({ x: x, y: y, cap: log.capturedCount, s: 0 });
 				undoMove(state, log);
 			}
 		});
@@ -649,8 +660,9 @@
 			var p = parseKey(k);
 			var x = p[0], y = p[1];
 			for (i = 0; i < RING1.length; i++) add(x + RING1[i][0], y + RING1[i][1]);
-			var ring2 = (v === side) ? RING2AXIS : RING2FULL;
-			for (i = 0; i < ring2.length; i++) add(x + ring2[i][0], y + ring2[i][1]);
+			if (v !== side) {
+				for (i = 0; i < RING2FULL.length; i++) add(x + RING2FULL[i][0], y + RING2FULL[i][1]);
+			}
 		});
 
 		var arr = [];
