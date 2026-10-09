@@ -109,6 +109,24 @@
 		return state.h1 + ':' + state.h2 + ':' + state.turn;
 	}
 
+	/*
+	 * Store a transposition-table entry, evicting the oldest ~10% when the table
+	 * grows past its cap. A full wipe would throw away the whole tree, which is
+	 * especially costly for the persistent table kept by the worker.
+	 */
+	function ttStore(ctx, k, e) {
+		ctx.tt.set(k, e);
+		if (ctx.tt.size > ctx.ttMax) {
+			var it = ctx.tt.keys();
+			var drop = Math.floor(ctx.ttMax * 0.1) || 1;
+			for (var i = 0; i < drop; i++) {
+				var r = it.next();
+				if (r.done) break;
+				ctx.tt.delete(r.value);
+			}
+		}
+	}
+
 	function createGame(options) {
 		options = options || {};
 		return {
@@ -590,27 +608,11 @@
 		}
 	})();
 
-	function orderScore(state, x, y, side, ctx, ply) {
-		var score = 0;
-		var foe = other(side);
-		for (var dx = -1; dx <= 1; dx++) {
-			for (var dy = -1; dy <= 1; dy++) {
-				if (dx === 0 && dy === 0) continue;
-				var t = state.dots.get(key(x + dx, y + dy));
-				if (t === undefined || isPrisoner(t)) continue;
-				if (t === foe) score += 6;
-				else if (t === side) score += 3;
-			}
-		}
-		var kk = key(x, y);
-		var killers = ctx.killer[ply];
-		if (killers) {
-			if (killers[0] === kk) score += 60;
-			else if (killers[1] === kk) score += 40;
-		}
-		score += (ctx.history[kk] || 0) * 0.01;
-		return score;
-	}
+	/*
+	 * Move ordering is accumulated while the candidates are generated: every
+	 * dot contributes to the score of the cells around it (enemy dots weigh
+	 * more, distance-two enemy cells weigh less), so no cell is re-scanned.
+	 */
 
 	/*
 	 * Every move that captures right now. A capture needs an almost-closed wall
@@ -667,30 +669,38 @@
 	 */
 	function generateMoves(state, ctx, ply, cap, detect) {
 		var side = state.turn;
-		var cand = new Set();
 		var i;
+		var candMap = new Map();
 
-		function add(x, y) {
+		function add(x, y, w) {
 			var nk = key(x, y);
-			if (cand.has(nk)) return;
+			var c = candMap.get(nk);
+			if (c !== undefined) { c.s += w; return; }
 			if (!canPlace(state, x, y)) return;
-			cand.add(nk);
+			candMap.set(nk, { x: x, y: y, s: w });
 		}
 
 		state.dots.forEach(function (v, k) {
 			if (v !== P1 && v !== P2) return;
 			var p = parseKey(k);
 			var x = p[0], y = p[1];
-			for (i = 0; i < RING1.length; i++) add(x + RING1[i][0], y + RING1[i][1]);
-			if (v !== side) {
-				for (i = 0; i < RING2FULL.length; i++) add(x + RING2FULL[i][0], y + RING2FULL[i][1]);
+			var own = (v === side);
+			for (i = 0; i < RING1.length; i++) add(x + RING1[i][0], y + RING1[i][1], own ? 3 : 6);
+			if (!own) {
+				for (i = 0; i < RING2FULL.length; i++) add(x + RING2FULL[i][0], y + RING2FULL[i][1], 3);
 			}
 		});
 
+		var killers = ctx.killer[ply];
+		var k0 = killers ? killers[0] : null;
+		var k1 = killers ? killers[1] : null;
 		var arr = [];
-		cand.forEach(function (nk) {
-			var p = parseKey(nk);
-			arr.push({ x: p[0], y: p[1], s: orderScore(state, p[0], p[1], side, ctx, ply), cap: 0 });
+		candMap.forEach(function (c, nk) {
+			var s = c.s;
+			if (nk === k0) s += 60;
+			else if (nk === k1) s += 40;
+			s += (ctx.history[nk] || 0) * 0.01;
+			arr.push({ x: c.x, y: c.y, s: s, cap: 0 });
 		});
 		arr.sort(function (a, b) { return b.s - a.s; });
 		var limit = cap === undefined ? ctx.maxMoves : cap;
@@ -882,11 +892,10 @@
 
 			if (ttKey && ctx.tt) {
 				var flag = best <= origAlpha ? TT_UPPER : (best >= origBeta ? TT_LOWER : TT_EXACT);
-				ctx.tt.set(ttKey, {
+				ttStore(ctx, ttKey, {
 					depth: depth, flag: flag, score: best,
 					x: localBest ? localBest.x : null, y: localBest ? localBest.y : null
 				});
-				if (ctx.tt.size > ctx.ttMax) ctx.tt.clear();
 			}
 			return best;
 		} finally {
@@ -997,7 +1006,7 @@
 				best = { x: localBest.x, y: localBest.y };
 				bestScore = localScore;
 				if (ctx.tt) {
-					ctx.tt.set(positionKey(state), {
+					ttStore(ctx, positionKey(state), {
 						depth: depth, flag: TT_EXACT, score: localScore,
 						x: localBest.x, y: localBest.y
 					});
@@ -1148,11 +1157,10 @@
 
 			if (ttKey && ctx.tt) {
 				var flag = best <= origAlpha ? TT_UPPER : (best >= origBeta ? TT_LOWER : TT_EXACT);
-				ctx.tt.set(ttKey, {
+				ttStore(ctx, ttKey, {
 					depth: depth, flag: flag, score: best,
 					x: localBest ? localBest.x : null, y: localBest ? localBest.y : null
 				});
-				if (ctx.tt.size > ctx.ttMax) ctx.tt.clear();
 			}
 			return best;
 		} finally {
@@ -1240,7 +1248,7 @@
 				best = { x: localBest.x, y: localBest.y };
 				bestScore = localScore;
 				if (ctx.tt) {
-					ctx.tt.set(positionKey(state), {
+					ttStore(ctx, positionKey(state), {
 						depth: depth, flag: TT_EXACT, score: localScore,
 						x: localBest.x, y: localBest.y
 					});
