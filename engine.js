@@ -690,7 +690,7 @@
 	 * Candidate moves: near every dot on the board, plus (when `detect`) every
 	 * capture, so the search never prunes a finishing move.
 	 */
-	function generateMoves(state, ctx, ply, cap, detect) {
+	function generateMoves(state, ctx, ply, cap, detect, prev) {
 		var side = state.turn;
 		var i;
 		var candMap = new Map();
@@ -717,11 +717,13 @@
 		var killers = ctx.killer[ply];
 		var k0 = killers ? killers[0] : null;
 		var k1 = killers ? killers[1] : null;
+		var counterKey = (prev && ctx.cm && ctx.counter) ? ctx.counter[prev] : null;
 		var arr = [];
 		candMap.forEach(function (c, nk) {
 			var s = c.s;
 			if (nk === k0) s += 60;
 			else if (nk === k1) s += 40;
+			else if (counterKey !== null && nk === counterKey) s += 30;
 			s += (ctx.history[nk] || 0) * 0.01;
 			arr.push({ x: c.x, y: c.y, s: s, cap: 0 });
 		});
@@ -815,6 +817,7 @@
 		if (depth <= 0) return yield* quiesce(state, alpha, beta, ctx, ply, ctx.qMax);
 
 		var pk = positionKey(state);
+		var prev = 0; /* the generator path does not track counter-moves */
 		var repAdded = false;
 		if (ctx.repSet) {
 			if (ctx.repSet.has(pk)) return 0;
@@ -834,7 +837,7 @@
 				}
 			}
 
-			var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
+			var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan, prev);
 			if (!moves.length) return evaluate(state, ctx.ai);
 
 			if (ttEntry && ttEntry.x !== null && ttEntry.x !== undefined) {
@@ -908,6 +911,7 @@
 						ctx.history[kk] = (ctx.history[kk] || 0) + depth * depth;
 						var kl = ctx.killer[ply] || (ctx.killer[ply] = [null, null]);
 						if (kl[0] !== kk) { kl[1] = kl[0]; kl[0] = kk; }
+						if (prev && ctx.cm) ctx.counter[prev] = kk;
 					}
 					break;
 				}
@@ -951,6 +955,8 @@
 			repSet: new Set(options.seen || []),
 			ai: player,
 			history: Object.create(null),
+			counter: Object.create(null),
+			cm: options.counter !== false,
 			killer: []
 		};
 	}
@@ -1080,7 +1086,7 @@
 		return best;
 	}
 
-	function searchSync(state, depth, alpha, beta, ctx, ply, ext) {
+	function searchSync(state, depth, alpha, beta, ctx, ply, ext, prev) {
 		ctx.nodes++;
 		if ((ctx.nodes & 255) === 0 && now() > ctx.deadline) throw TIMEOUT;
 		if (depth <= 0) return quiesceSync(state, alpha, beta, ctx, ply, ctx.qMax);
@@ -1105,7 +1111,7 @@
 				}
 			}
 
-			var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan);
+			var moves = generateMoves(state, ctx, ply, undefined, ply > 0 && ply <= ctx.tacticalScan, prev);
 			if (!moves.length) return evaluate(state, ctx.ai);
 
 			if (ttEntry && ttEntry.x !== null && ttEntry.x !== undefined) {
@@ -1146,28 +1152,29 @@
 				var reduce = (ctx.lmr !== false && !forcing && depth >= 3 && searched >= 3)
 					? (searched >= 8 && depth >= 6 ? 2 : 1) : 0;
 				var searchDepth = Math.max(1, childDepth - reduce);
+				var childPrev = key(mv.x, mv.y);
 
 				var v;
 				try {
 					if (reduce > 0) {
 						if (maximizing) {
-							v = searchSync(state, searchDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
-							if (v > alpha) v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+							v = searchSync(state, searchDepth, alpha, alpha + 1, ctx, ply + 1, childExt, childPrev);
+							if (v > alpha) v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt, childPrev);
 						} else {
-							v = searchSync(state, searchDepth, beta - 1, beta, ctx, ply + 1, childExt);
-							if (v < beta) v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+							v = searchSync(state, searchDepth, beta - 1, beta, ctx, ply + 1, childExt, childPrev);
+							if (v < beta) v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt, childPrev);
 						}
 					} else if (searched === 0 || !ctx.pvs) {
-						v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+						v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt, childPrev);
 					} else if (maximizing) {
-						v = searchSync(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt);
+						v = searchSync(state, childDepth, alpha, alpha + 1, ctx, ply + 1, childExt, childPrev);
 						if (v > alpha && v < beta) {
-							v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+							v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt, childPrev);
 						}
 					} else {
-						v = searchSync(state, childDepth, beta - 1, beta, ctx, ply + 1, childExt);
+						v = searchSync(state, childDepth, beta - 1, beta, ctx, ply + 1, childExt, childPrev);
 						if (v < beta && v > alpha) {
-							v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt);
+							v = searchSync(state, childDepth, alpha, beta, ctx, ply + 1, childExt, childPrev);
 						}
 					}
 				} finally {
@@ -1188,6 +1195,7 @@
 						ctx.history[kk] = (ctx.history[kk] || 0) + depth * depth;
 						var kl = ctx.killer[ply] || (ctx.killer[ply] = [null, null]);
 						if (kl[0] !== kk) { kl[1] = kl[0]; kl[0] = kk; }
+						if (prev && ctx.cm) ctx.counter[prev] = kk;
 					}
 					break;
 				}
@@ -1266,14 +1274,15 @@
 
 					var capture = log.capturedCount > 0;
 					var childDepth = capture ? depth : depth - 1;
+					var childPrev = key(mv.x, mv.y);
 					var v;
 					try {
 						if (rsearched === 0 || !ctx.pvs) {
-							v = searchSync(state, childDepth, alpha, beta, ctx, 1, capture ? 2 : 3);
+							v = searchSync(state, childDepth, alpha, beta, ctx, 1, capture ? 2 : 3, childPrev);
 						} else {
-							v = searchSync(state, childDepth, alpha, alpha + 1, ctx, 1, capture ? 2 : 3);
+							v = searchSync(state, childDepth, alpha, alpha + 1, ctx, 1, capture ? 2 : 3, childPrev);
 							if (v > alpha && v < beta) {
-								v = searchSync(state, childDepth, alpha, beta, ctx, 1, capture ? 2 : 3);
+								v = searchSync(state, childDepth, alpha, beta, ctx, 1, capture ? 2 : 3, childPrev);
 							}
 						}
 					} catch (e) {
