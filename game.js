@@ -18,8 +18,27 @@
 	var MIN_ZOOM = ZOOM_LEVELS[0];
 	var MAX_ZOOM = ZOOM_LEVELS[ZOOM_LEVELS.length - 1];
 
-	/* Field size — side length in cells; null is the endless board. */
-	var FIELD_SIZES = { small: 20, medium: 40, infinite: null };
+	/*
+	 * Field sizes. A finite field has `w` × `h` points (intersections), matching
+	 * the sizes in the manual (20×20, 30×30, 39×30); `null` is the endless board.
+	 */
+	var FIELD_SIZES = {
+		s20: { w: 20, h: 20 },
+		s30: { w: 30, h: 30 },
+		s3930: { w: 39, h: 30 },
+		infinite: null
+	};
+
+	/*
+	 * Start positions: a "cross" is a 2×2 square with red on one diagonal and
+	 * blue on the other. X is one cross, 2X two crosses side by side, 4X four
+	 * crosses in a 2×2 block (see the manual, figure 3).
+	 */
+	var START_CROSSES = {
+		x: [[0, 0]],
+		'2x': [[0, 0], [2, 0]],
+		'4x': [[0, 0], [2, 0], [0, 2], [2, 2]]
+	};
 
 	/*
 	 * Game-time choices in seconds. There is no upper limit: after five
@@ -73,7 +92,8 @@
 
 	var NAMES = { 1: 'Синие', 2: 'Красные' };
 	var DIFFICULTY_NAMES = { easy: 'Лёгкий', medium: 'Средний', hard: 'Сложный' };
-	var SIZE_NAMES = { small: '20×20', medium: '40×40', infinite: 'Без границ' };
+	var SIZE_NAMES = { s20: '20×20', s30: '30×30', s3930: '39×30', infinite: 'Без границ' };
+	var START_NAMES = { x: 'X (скрест)', '2x': '2X (два скреста)', '4x': '4X (четыре скреста)' };
 
 	var BADGE_TROPHY =
 		'<svg viewBox="0 0 24 24"><path d="M8 21h8M12 17v4M6 3h12v5a6 6 0 0 1-12 0z"/><path d="M6 5H3v2a4 4 0 0 0 4 4M18 5h3v2a4 4 0 0 1-4 4"/></svg>';
@@ -92,14 +112,17 @@
 		mode: 'pvp',
 		started: false,
 		size: 'infinite',
+		start: 'x',
 		difficulty: 'medium',
 		first: 'human',
 		timeLimit: 0,
 		timeIndex: -1,
-		deadline: null,
+		clocks: null,
+		turnDeadline: 0,
 		clockTimer: null,
 		turnTimer: null,
 		turnStart: 0,
+		stopPhase: null,
 		panelHidden: false,
 		botWorker: null,
 		botWorkerUrl: null,
@@ -971,7 +994,10 @@
 			state: E.clone(ui.state),
 			scene: { edges: ui.scene.edges.slice() },
 			ended: ui.ended,
-			hashes: ui.positionHashes.slice()
+			hashes: ui.positionHashes.slice(),
+			clocks: ui.clocks ? { 1: ui.clocks[1], 2: ui.clocks[2] } : null,
+			turnDeadline: ui.turnDeadline,
+			stopPhase: ui.stopPhase ? { by: ui.stopPhase.by, deadline: ui.stopPhase.deadline } : null
 		});
 	}
 
@@ -980,6 +1006,9 @@
 		ui.scene = entry.scene;
 		ui.ended = entry.ended;
 		ui.positionHashes = entry.hashes ? entry.hashes.slice() : [];
+		ui.clocks = entry.clocks ? { 1: entry.clocks[1], 2: entry.clocks[2] } : null;
+		ui.turnDeadline = entry.turnDeadline || 0;
+		ui.stopPhase = entry.stopPhase || null;
 	}
 
 	function commitMove(x, y) {
@@ -994,14 +1023,17 @@
 		   broken instead of running forever; any capture resets the count. */
 		if (res.capturedCount > 0) ui.botQuiet = 0;
 		else if (ui.mode === 'bot' && res.player === 2) ui.botQuiet += 1;
+		commitClock(player);
 		beginTurn();
 		ui.hover = null;
 		ui.cursor.x = x; ui.cursor.y = y;
 		extendScene(res.player, res.claimed);
-		if (ui.timeLimit && !ui.deadline) startClock();
 		announce(res, player);
 		render();
 		updatePanel();
+		if (ui.ended) return;
+		/* The game ends when nothing can be played any more. */
+		if (!E.hasAnyMove(ui.state)) { showResult(null, 'full'); return; }
 		if (ui.mode === 'bot' && ui.state.turn === 2) scheduleBot();
 	}
 
@@ -1027,18 +1059,39 @@
 		return m + ':' + (s < 10 ? '0' : '') + s;
 	}
 
-	function updateTimerLabel() {
+	function updateTimerLabels() {
 		if (!els.timeLeft) return;
+		if (els.clock1) els.clock1.textContent = (ui.timeLimit && ui.clocks) ? formatClock(remainingFor(1)) : '';
+		if (els.clock2) els.clock2.textContent = (ui.timeLimit && ui.clocks) ? formatClock(remainingFor(2)) : '';
+
+		if (ui.stopPhase) {
+			els.timeLeft.hidden = false;
+			if (els.timeSep) els.timeSep.hidden = true;
+			var sd = Math.max(0, ui.stopPhase.deadline - nowMs());
+			els.timeLeft.textContent = formatClock(sd);
+			els.timeLeft.setAttribute('data-player', String(ui.stopPhase.by));
+			els.timeLeft.classList.toggle('is-low', sd <= 10000);
+			return;
+		}
+
 		var show = ui.timeLimit > 0;
 		els.timeLeft.hidden = !show;
 		if (els.timeSep) els.timeSep.hidden = !show;
 		if (!show) return;
-		var left;
-		if (ui.ended) left = 0;
-		else if (ui.deadline) left = Math.max(0, ui.deadline - nowMs());
-		else left = ui.timeLimit * 1000;
+		var active = ui.ended ? 0 : ui.state.turn;
+		var left = ui.ended ? 0 : remainingFor(active);
 		els.timeLeft.textContent = formatClock(left);
+		els.timeLeft.setAttribute('data-player', String(active || 1));
 		els.timeLeft.classList.toggle('is-low', !ui.ended && left <= 5000);
+	}
+
+	/* Remaining time of a player (the one on the clock is counted live). */
+	function remainingFor(player) {
+		if (!ui.clocks) return ui.timeLimit * 1000;
+		if (!ui.ended && !ui.stopPhase && player === ui.state.turn) {
+			return Math.max(0, ui.turnDeadline - nowMs());
+		}
+		return Math.max(0, ui.clocks[player]);
 	}
 
 	function stopClock() {
@@ -1057,6 +1110,7 @@
 	/* Called whenever the turn passes to the other side. */
 	function beginTurn() {
 		ui.turnStart = nowMs();
+		if (ui.timeLimit && ui.clocks && !ui.stopPhase) ui.turnDeadline = nowMs() + ui.clocks[ui.state.turn];
 	}
 
 	function tickTurnTimer() {
@@ -1081,34 +1135,124 @@
 		tickTurnTimer();
 	}
 
-	/* The clock starts on the first move, so choosing the setting is not timed. */
+	/* Each player has their own clock; it runs only during their own turn. */
+	function ensureTimer() {
+		if (!ui.clockTimer && !ui.ended && (ui.timeLimit || ui.stopPhase)) {
+			ui.clockTimer = window.setInterval(tickClock, 200);
+		}
+		updateTimerLabels();
+	}
+
+	function tickClock() {
+		if (ui.ended) { stopClock(); return; }
+		updateTimerLabels();
+		if (ui.stopPhase) {
+			if (nowMs() >= ui.stopPhase.deadline) endStopPhase();
+			return;
+		}
+		if (ui.timeLimit && ui.clocks && ui.turnDeadline - nowMs() <= 0) {
+			var loser = ui.state.turn;
+			ui.clocks[loser] = 0;
+			stopClock();
+			showResult(loser === 1 ? 2 : 1, 'timeout');
+		}
+	}
+
 	function startClock() {
+		if (ui.timeLimit) {
+			if (!ui.clocks) ui.clocks = { 1: ui.timeLimit * 1000, 2: ui.timeLimit * 1000 };
+			ui.turnDeadline = nowMs() + ui.clocks[ui.state.turn];
+		}
+		ensureTimer();
+	}
+
+	/* Charge the just-finished turn to the player who spent it. */
+	function commitClock(player) {
+		if (ui.timeLimit && ui.clocks && !ui.stopPhase) {
+			ui.clocks[player] = Math.max(0, ui.turnDeadline - nowMs());
+		}
+	}
+
+	/* ---------------------------------------------------- СТОП (grounding) --- */
+
+	/*
+	 * A player whose every wall reaches the edge is grounded and can stop the
+	 * game. The opponent then gets three minutes to try to enclose the still
+	 * free points; when the time is up the score decides.
+	 */
+	function startStopPhase(by) {
+		if (ui.ended || ui.stopPhase) return;
+		ui.stopPhase = { by: by, deadline: nowMs() + 180000 };
+		commitClock(by);
+		ui.thinking = false;
+		ui.botRequestId += 1;
 		stopClock();
-		if (!ui.timeLimit || ui.ended) return;
-		ui.deadline = nowMs() + ui.timeLimit * 1000;
-		ui.clockTimer = window.setInterval(function () {
-			if (ui.ended) { stopClock(); return; }
-			updateTimerLabel();
-			if (ui.deadline && nowMs() >= ui.deadline) {
-				stopClock();
-				if (!ui.ended) showResult(null, 'time');
-			}
-		}, 200);
-		updateTimerLabel();
+		els.live.textContent = NAMES[by] + ' заземлились и остановили игру. У ' +
+			NAMES[by === 1 ? 2 : 1] + ' есть три минуты, чтобы попытаться окружить их точки.';
+		ensureTimer();
+		render();
+		updatePanel();
+		if (ui.mode === 'bot' && ui.state.turn === 2 && !ui.thinking) scheduleBot();
+	}
+
+	function endStopPhase() {
+		if (!ui.stopPhase) return;
+		ui.stopPhase = null;
+		stopClock();
+		showResult(null, 'stop');
+	}
+
+	function tryStop() {
+		if (ui.ended || !ui.started || ui.stopPhase) return;
+		if (ui.mode === 'bot' && ui.state.turn === 2) return;
+		var by = ui.state.turn;
+		if (!E.isGrounded(ui.state, by)) {
+			els.live.textContent = 'Ваши точки ещё не заземлены: не все стенки соединены с краем поля.';
+			return;
+		}
+		startStopPhase(by);
 	}
 
 	/* ----------------------------------------------------------- new game --- */
 
 	function boundsForSize(size) {
-		var cells = FIELD_SIZES[size];
-		if (!cells) return null;
-		return { x0: 0, y0: 0, x1: cells, y1: cells };
+		var f = FIELD_SIZES[size];
+		if (!f) return null;
+		return { x0: 0, y0: 0, x1: f.w - 1, y1: f.h - 1 };
+	}
+
+	/*
+	 * Lay out the chosen start position, centred on the field. A cross is a 2×2
+	 * square: red on one diagonal, blue on the other (blue moves first).
+	 */
+	function startCells(kind, bounds) {
+		var crosses = START_CROSSES[kind] || START_CROSSES.x;
+		var w = 0, h = 0, i;
+		for (i = 0; i < crosses.length; i++) {
+			w = Math.max(w, crosses[i][0] + 2);
+			h = Math.max(h, crosses[i][1] + 2);
+		}
+		var cx = bounds ? (bounds.x0 + bounds.x1) / 2 : 0;
+		var cy = bounds ? (bounds.y0 + bounds.y1) / 2 : 0;
+		var left = Math.floor(cx - (w - 1) / 2);
+		var top = Math.floor(cy - (h - 1) / 2);
+		var cells = [];
+		for (i = 0; i < crosses.length; i++) {
+			var bx = left + crosses[i][0], by = top + crosses[i][1];
+			cells.push({ x: bx, y: by, player: 2 });
+			cells.push({ x: bx + 1, y: by + 1, player: 2 });
+			cells.push({ x: bx + 1, y: by, player: 1 });
+			cells.push({ x: bx, y: by + 1, player: 1 });
+		}
+		return cells;
 	}
 
 	function newGame() {
 		ui.state = E.createGame({ extraTurn: false, bounds: boundsForSize(ui.size) });
+		E.seed(ui.state, startCells(ui.start, ui.state.bounds));
+		ui.state.turn = 1;
 		ui.history = [];
-		ui.positionHashes = [];
+		ui.positionHashes = [E.hash(ui.state)];
 		ui.ended = false;
 		ui.thinking = false;
 		ui.botRequestId += 1;
@@ -1119,7 +1263,9 @@
 		ui.flash = null;
 		ui.keyboard = false;
 		ui.scene = { edges: [] };
-		ui.deadline = null;
+		ui.clocks = null;
+		ui.turnDeadline = 0;
+		ui.stopPhase = null;
 		stopClock();
 		stopTurnTimer();
 		beginTurn();
@@ -1142,6 +1288,7 @@
 		ui.started = true;
 		if (ui.mode === 'bot' && ui.first === 'bot') ui.state.turn = 2;
 		beginTurn();
+		if (ui.timeLimit) { ui.clocks = null; startClock(); }
 		render();
 		updatePanel();
 		if (ui.mode === 'bot' && ui.first === 'bot') scheduleBot();
@@ -1181,10 +1328,20 @@
 		els.finishBtn.hidden = !started;
 		els.undoBtn.disabled = false;
 		els.finishBtn.disabled = false;
+		if (els.stopBtn) {
+			els.stopBtn.hidden = !inProgress;
+			var humanTurn = !(ui.mode === 'bot' && ui.state.turn === 2);
+			var grounded = inProgress && !ui.stopPhase && humanTurn && E.isGrounded(ui.state, ui.state.turn);
+			els.stopBtn.disabled = !grounded;
+			els.stopBtn.classList.toggle('is-armed', grounded);
+		}
+		if (ui.stopPhase) {
+			els.turnText.textContent = 'СТОП: ' + NAMES[ui.stopPhase.by === 1 ? 2 : 1] + ' пробуют окружить';
+		}
 		els.canvas.classList.toggle('is-locked', ui.ended || !ui.started);
 		els.canvas.classList.toggle('is-thinking', ui.thinking);
 		updateZoomLabel();
-		updateTimerLabel();
+		updateTimerLabels();
 		applyPanelVisibility();
 	}
 
@@ -1374,6 +1531,12 @@
 
 	function scheduleBot() {
 		if (ui.mode !== 'bot' || ui.ended || ui.thinking) return;
+		/* If the computer has grounded its walls and leads, it stops the game
+		   instead of shuffling filler moves forever. */
+		if (!ui.stopPhase && E.isGrounded(ui.state, 2) && ui.state.score[2] > ui.state.score[1]) {
+			startStopPhase(2);
+			return;
+		}
 		ui.thinking = true;
 		updatePanel();
 		window.setTimeout(function () {
@@ -1412,6 +1575,7 @@
 			while (ui.state.turn !== 1 && ui.history.length) restore(ui.history.pop());
 		}
 		ui.ended = false;
+		ui.stopPhase = null;
 		ui.hover = null;
 		beginTurn();
 		render();
@@ -1455,6 +1619,11 @@
 		Array.prototype.forEach.call(els.firstOpts, function (btn) {
 			markOption(btn, btn.getAttribute('data-first') === ui.first);
 		});
+		if (els.startOpts) {
+			Array.prototype.forEach.call(els.startOpts, function (btn) {
+				markOption(btn, btn.getAttribute('data-start') === ui.start);
+			});
+		}
 		updateTimeUI();
 	}
 
@@ -1485,6 +1654,7 @@
 		els.infoFirstRow.hidden = !bot;
 		els.infoFirst.textContent = ui.first === 'bot' ? 'Компьютер' : 'Вы';
 		els.infoSize.textContent = SIZE_NAMES[ui.size] || 'Без границ';
+		if (els.infoStart) els.infoStart.textContent = START_NAMES[ui.start] || 'X (скрест)';
 		els.infoTime.textContent = ui.timeLimit === 0
 			? 'Без учёта времени'
 			: formatClock(ui.timeLimit * 1000);
@@ -1547,14 +1717,23 @@
 		ui.ended = true;
 		ui.thinking = false;
 		ui.botRequestId += 1;
+		ui.stopPhase = null;
 		stopClock();
 		var s = ui.state;
 		var s1 = s.score[1], s2 = s.score[2];
-		var title, lead;
+		var title, lead, prefix = '';
+
+		if (reason === 'timeout') prefix = 'Время вышло. ';
+		else if (reason === 'full') prefix = 'Поле заполнено. ';
+		else if (reason === 'stop') prefix = 'Игра остановлена после «СТОП». ';
 
 		if (reason === 'resign') {
 			title = NAMES[winner] + ' побеждают';
 			lead = NAMES[winner === 1 ? 2 : 1] + ' сдались.';
+			els.resultBadge.innerHTML = BADGE_TROPHY;
+		} else if (reason === 'timeout') {
+			title = NAMES[winner] + ' побеждают';
+			lead = 'У ' + NAMES[winner === 1 ? 2 : 1] + ' закончилось время.';
 			els.resultBadge.innerHTML = BADGE_TROPHY;
 		} else if (s1 === s2) {
 			title = 'Ничья';
@@ -1567,10 +1746,9 @@
 			lead = NAMES[w] + ' взяли в плен ' + wn + ' ' + pointsWord(wn) + ' соперника.';
 			els.resultBadge.innerHTML = BADGE_TROPHY;
 		}
-		if (reason === 'time') lead = 'Время вышло. ' + lead;
 
 		els.resultTitle.textContent = title;
-		els.resultLead.textContent = lead;
+		els.resultLead.textContent = prefix + lead;
 		els.resultName1.textContent = NAMES[1];
 		els.resultName2.textContent = NAMES[2];
 		els.resultScore1.textContent = s1;
@@ -1766,6 +1944,7 @@
 				onOk: function () { showResult(null, 'manual'); }
 			});
 		});
+		if (els.stopBtn) els.stopBtn.addEventListener('click', tryStop);
 		els.themeBtn.addEventListener('click', toggleTheme);
 		els.rulesBtn.addEventListener('click', function () { els.rulesDialog.showModal(); });
 		els.zoomIn.addEventListener('click', function () {
@@ -1816,6 +1995,19 @@
 				newGame();
 			});
 		});
+
+		if (els.startOpts) {
+			Array.prototype.forEach.call(els.startOpts, function (btn) {
+				btn.addEventListener('click', function () {
+					var next = btn.getAttribute('data-start');
+					if (next === ui.start) return;
+					ui.start = next;
+					applySettingsUI();
+					saveSetting('dots:start', next);
+					newGame();
+				});
+			});
+		}
 
 		els.timeDown.addEventListener('click', function () { stepTime(-1); });
 		els.timeUp.addEventListener('click', function () { stepTime(1); });
@@ -1896,6 +2088,7 @@
 		els.startBtn = $('startBtn');
 		els.undoBtn = $('undoBtn');
 		els.finishBtn = $('finishBtn');
+		els.stopBtn = $('stopBtn');
 		els.themeBtn = $('themeBtn');
 		els.rulesBtn = $('rulesBtn');
 		els.zoomIn = $('zoomIn');
@@ -1919,6 +2112,7 @@
 		els.sizeOpts = document.querySelectorAll('[data-size]');
 		els.difficultyOpts = document.querySelectorAll('[data-difficulty]');
 		els.firstOpts = document.querySelectorAll('[data-first]');
+		els.startOpts = document.querySelectorAll('[data-start]');
 		els.firstSetting = $('firstSetting');
 		els.timeStepper = $('timeStepper');
 		els.timeValue = $('timeValue');
@@ -1934,10 +2128,13 @@
 		els.infoFirstRow = $('infoFirstRow');
 		els.infoFirst = $('infoFirst');
 		els.infoSize = $('infoSize');
+		els.infoStart = $('infoStart');
 		els.infoTime = $('infoTime');
 		els.difficultySetting = $('difficultySetting');
 		els.timeLeft = $('timeLeft');
 		els.timeSep = $('timeSep');
+		els.clock1 = $('clock1');
+		els.clock2 = $('clock2');
 		els.live = $('live');
 
 		initTheme();
@@ -1947,6 +2144,8 @@
 		var diff = loadSetting('dots:difficulty', 'medium');
 		ui.difficulty = DIFFICULTY.hasOwnProperty(diff) ? diff : 'medium';
 		ui.first = loadSetting('dots:first', 'human') === 'bot' ? 'bot' : 'human';
+		var startKind = loadSetting('dots:start', 'x');
+		ui.start = START_CROSSES.hasOwnProperty(startKind) ? startKind : 'x';
 		/* The chosen limit is the source of truth; 0 means "без учёта времени". */
 		var storedLimit = Math.max(0, parseInt(loadSetting('dots:time', '0'), 10) || 0);
 		var found = -1;

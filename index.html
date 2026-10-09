@@ -89,6 +89,7 @@
 			</div>
 			<p class="score__value"><span id="score1">0</span><span class="score__unit">пленных</span></p>
 			<p class="score__note">Точек на поле: <span id="captured1">0</span></p>
+			<p class="score__clock" id="clock1"></p>
 		</article>
 
 		<article class="score__card" id="card2" data-player="2" aria-label="Второй игрок">
@@ -99,6 +100,7 @@
 			</div>
 			<p class="score__value"><span id="score2">0</span><span class="score__unit">пленных</span></p>
 			<p class="score__note">Точек на поле: <span id="captured2">0</span></p>
+			<p class="score__clock" id="clock2"></p>
 		</article>
 	</div>
 
@@ -126,10 +128,19 @@
 			</div>
 		</div>
 		<div class="setting">
+			<span class="setting__label" id="startLabel">Стартовая позиция</span>
+			<div class="segmented segmented--3" role="group" aria-labelledby="startLabel">
+				<button class="segmented__opt is-active" data-start="x" type="button" aria-pressed="true">X</button>
+				<button class="segmented__opt" data-start="2x" type="button" aria-pressed="false">2X</button>
+				<button class="segmented__opt" data-start="4x" type="button" aria-pressed="false">4X</button>
+			</div>
+		</div>
+		<div class="setting">
 			<span class="setting__label" id="sizeLabel">Поле</span>
-			<div class="segmented segmented--3" role="group" aria-labelledby="sizeLabel">
-				<button class="segmented__opt" data-size="small" type="button" aria-pressed="false">20×20</button>
-				<button class="segmented__opt" data-size="medium" type="button" aria-pressed="false">40×40</button>
+			<div class="segmented segmented--4" role="group" aria-labelledby="sizeLabel">
+				<button class="segmented__opt" data-size="s20" type="button" aria-pressed="false">20×20</button>
+				<button class="segmented__opt" data-size="s30" type="button" aria-pressed="false">30×30</button>
+				<button class="segmented__opt" data-size="s3930" type="button" aria-pressed="false">39×30</button>
 				<button class="segmented__opt is-active" data-size="infinite" type="button" aria-pressed="true">Без границ</button>
 			</div>
 		</div>
@@ -162,6 +173,10 @@
 			<span class="match-info__value" id="infoSize">Без границ</span>
 		</div>
 		<div class="match-info__row">
+			<span class="match-info__label">Старт</span>
+			<span class="match-info__value" id="infoStart">X (скрест)</span>
+		</div>
+		<div class="match-info__row">
 			<span class="match-info__label">Время партии</span>
 			<span class="match-info__value" id="infoTime">Без учёта времени</span>
 		</div>
@@ -177,6 +192,10 @@
 		<button class="btn btn--secondary" id="undoBtn" type="button">
 			<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M9 14 4 9l5-5"/><path d="M4 9h11a5 5 0 0 1 0 10h-1"/></svg>
 			Отменить ход
+		</button>
+		<button class="btn btn--secondary" id="stopBtn" type="button" hidden>
+			<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="1.5"/></svg>
+			СТОП
 		</button>
 		<button class="btn btn--primary" id="finishBtn" type="button">
 			<svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 22V4"/><path d="M4 5h13l-2 3 2 3H4"/></svg>
@@ -219,11 +238,13 @@
 			<ul>
 				<li>Соперники всегда ходят по очереди.</li>
 				<li>Играть можно вдвоём или против компьютера. У компьютера три уровня: лёгкий, средний и сложный; можно выбрать, кто ходит первым — вы или компьютер.</li>
-				<li>Поле можно выбрать: 20×20 клеток, 40×40 клеток или без границ.</li>
-				<li>Перед партией можно задать общее время: 20 секунд и больше или без учёта времени. Когда время выходит, партия завершается, а победитель определяется по числу пленных.</li>
+				<li>Стартовая позиция выбирается перед партией: X (один скрест), 2X или 4X. Скрест — это квадрат 2×2, в котором у каждого игрока свои точки по диагонали.</li>
+				<li>Поле можно выбрать: 20×20, 30×30, 39×30 пунктов или без границ.</li>
+				<li>Время задаётся каждому игроку: 20 секунд и больше или без учёта. Часы идут только в свой ход; у кого время закончилось — тот проиграл.</li>
 				<li>Пока партия идёт, параметры игры зафиксированы; менять их можно до начала или после окончания.</li>
 				<li>Перемещайтесь перетаскиванием, масштаб — колесом или кнопками (50–150%).</li>
-				<li>Партия заканчивается, когда соперники завершают игру (с подтверждением) или когда вышло время.</li>
+				<li>Когда ваши точки заземлены (все стенки соединены с краем поля), можно нажать «СТОП»: сопернику даётся 3 минуты, чтобы попытаться вас окружить, после чего партия заканчивается по счёту.</li>
+				<li>Партия заканчивается, когда поле заполнено, по взаимному согласию, после «СТОП» или когда у одного из игроков вышло время.</li>
 				<li>Побеждает тот, кто взял в плен больше точек соперника.</li>
 			</ul>
 		</div>

@@ -365,6 +365,71 @@
 
 	function isGameOver() { return false; }
 
+	/*
+	 * Drop the opening dots straight onto the board (no turn bookkeeping, no
+	 * capture resolution — a start position never encloses anything). Each cell
+	 * is { x, y, player }.
+	 */
+	function seed(state, cells) {
+		if (!cells) return state;
+		for (var i = 0; i < cells.length; i++) {
+			var c = cells[i];
+			var p = c.player || c.p;
+			if (p !== P1 && p !== P2) continue;
+			var k = key(c.x, c.y);
+			if (state.dots.has(k) || state.claimed.has(k)) continue;
+			var d = hashDelta(k, HASH_DOT, undefined, p);
+			state.h1 ^= d[0]; state.h2 ^= d[1];
+			state.dots.set(k, p);
+		}
+		return state;
+	}
+
+	/*
+	 * A player is "grounded" (заземлён) when every one of their 8-connected
+	 * groups touches the board edge, so the whole wall is anchored and cannot be
+	 * enclosed. Impossible on the endless board (there is no edge).
+	 */
+	function isGrounded(state, player) {
+		var b = state.bounds;
+		if (!b) return false;
+		var visited = new Set();
+		var any = false, all = true;
+		state.dots.forEach(function (v, k0) {
+			if (v !== player || visited.has(k0)) return;
+			any = true;
+			var stack = [k0];
+			visited.add(k0);
+			var touch = false;
+			while (stack.length) {
+				var ck = stack.pop();
+				var p = parseKey(ck);
+				if (p[0] === b.x0 || p[0] === b.x1 || p[1] === b.y0 || p[1] === b.y1) touch = true;
+				for (var dx = -1; dx <= 1; dx++) {
+					for (var dy = -1; dy <= 1; dy++) {
+						if (dx === 0 && dy === 0) continue;
+						var nk = key(p[0] + dx, p[1] + dy);
+						if (state.dots.get(nk) === player && !visited.has(nk)) { visited.add(nk); stack.push(nk); }
+					}
+				}
+			}
+			if (!touch) all = false;
+		});
+		return any && all;
+	}
+
+	/* Is there at least one free point left to play? Always true when endless. */
+	function hasAnyMove(state) {
+		var b = state.bounds;
+		if (!b) return true;
+		for (var x = b.x0; x <= b.x1; x++) {
+			for (var y = b.y0; y <= b.y1; y++) {
+				if (canPlace(state, x, y)) return true;
+			}
+		}
+		return false;
+	}
+
 	/* ==================================================================== AI */
 
 	/*
@@ -1248,6 +1313,9 @@
 		activeCount: activeCount,
 		prisonerCount: prisonerCount,
 		isGameOver: isGameOver,
+		seed: seed,
+		isGrounded: isGrounded,
+		hasAnyMove: hasAnyMove,
 		evaluate: evaluate,
 		setWeights: setWeights,
 		hash: positionKey,

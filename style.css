@@ -543,6 +543,8 @@ body.panel-hidden .panel { transform: translateX(100%); }
 }
 .segmented--3 { grid-template-columns: repeat(3, 1fr); }
 .segmented--3 .segmented__opt { padding: 0 6px; font-size: 12.5px; }
+.segmented--4 { grid-template-columns: repeat(4, 1fr); }
+.segmented--4 .segmented__opt { padding: 0 4px; font-size: 12px; }
 
 /* time picker */
 .stepper { display: flex; align-items: center; gap: 6px; }
@@ -713,3 +715,11 @@ body.panel-hidden .panel { transform: translateX(100%); }
 		transition-duration: 0.001ms !important;
 	}
 }
+
+/* Per-player clocks on the score cards */
+.score__clock { margin: 2px 0 0; font-size: 12px; font-weight: 600; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+.score__clock:empty { display: none; }
+.score__card.is-active .score__clock { color: var(--ink); }
+
+/* The STOP button lights up only when the side to move is grounded */
+.btn.is-armed { box-shadow: 0 0 0 2px var(--focus) inset; }
