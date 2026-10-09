@@ -1034,7 +1034,10 @@
 		if (ui.ended) return;
 		/* The game ends when nothing can be played any more. */
 		if (!E.hasAnyMove(ui.state)) { showResult(null, 'full'); return; }
-		if (ui.mode === 'bot' && ui.state.turn === 2) scheduleBot();
+		if (ui.mode === 'bot') {
+			if (ui.state.turn === 2) scheduleBot();
+			else ponderCurrent();
+		}
 	}
 
 	function announce(res, player) {
@@ -1268,6 +1271,7 @@
 		ui.stopPhase = null;
 		stopClock();
 		stopTurnTimer();
+		workerReset();
 		beginTurn();
 		var b = ui.state.bounds;
 		ui.cursor.x = b ? Math.floor((b.x0 + b.x1) / 2) : 0;
@@ -1291,7 +1295,10 @@
 		if (ui.timeLimit) { ui.clocks = null; startClock(); }
 		render();
 		updatePanel();
-		if (ui.mode === 'bot' && ui.first === 'bot') scheduleBot();
+		if (ui.mode === 'bot') {
+			if (ui.first === 'bot') scheduleBot();
+			else ponderCurrent();
+		}
 	}
 
 	/* --------------------------------------------------------------- panel --- */
@@ -1360,6 +1367,7 @@
 		return 'importScripts(' + JSON.stringify(engineUrl) + ');' +
 			'self.onmessage=function(ev){' +
 			'var d=ev.data||{};' +
+			'if(d.type==="ponder"||d.type==="stop"||d.type==="reset")return;' +
 			'var s={dots:new Map(d.dots),claimed:new Map(d.claimed),turn:d.turn,score:d.score,' +
 			'rules:d.rules,bounds:d.bounds||null,lastMove:d.lastMove||null,moveCount:d.moveCount};' +
 			'var m=[];try{' +
@@ -1464,6 +1472,48 @@
 		};
 	}
 
+	/*
+	 * While it is the human's turn the file worker can keep searching the live
+	 * position; the transposition table it builds makes the later real search
+	 * deeper. Only the same-origin file worker supports this (the Blob fallback
+	 * has no persistent state).
+	 */
+	function hasPonderWorker() {
+		return !!ui.botWorker && ui.botWorkerKind === 'file';
+	}
+
+	function workerStop() {
+		if (!hasPonderWorker()) return;
+		try { ui.botWorker.postMessage({ type: 'stop' }); } catch (err) {}
+	}
+
+	function workerReset() {
+		if (!hasPonderWorker()) return;
+		try { ui.botWorker.postMessage({ type: 'reset' }); } catch (err) {}
+	}
+
+	function ponderCurrent() {
+		if (!hasPonderWorker() || ui.mode !== 'bot' || ui.ended || ui.stopPhase) return;
+		if (ui.state.turn !== 1) return;
+		var s = ui.state;
+		var preset = DIFFICULTY[ui.difficulty] || DIFFICULTY.medium;
+		try {
+			ui.botWorker.postMessage({
+				type: 'ponder',
+				dots: Array.from(s.dots),
+				claimed: Array.from(s.claimed),
+				turn: s.turn,
+				score: { 1: s.score[1], 2: s.score[2] },
+				rules: s.rules,
+				bounds: s.bounds,
+				lastMove: s.lastMove,
+				moveCount: s.moveCount,
+				player: 2,
+				options: botOptions(preset)
+			});
+		} catch (err) {}
+	}
+
 	function requestBotMove(preset) {
 		var options = botOptions(preset);
 		/* Break a repeating, capture-less deadlock by trying the runner-up. */
@@ -1564,6 +1614,7 @@
 	function undo() {
 		if (!ui.history.length) return;
 		/* The button is always live: undo may interrupt the computer's turn. */
+		workerStop();
 		if (ui.thinking) {
 			ui.thinking = false;
 			ui.botPending = null;
@@ -1719,6 +1770,7 @@
 		ui.botRequestId += 1;
 		ui.stopPhase = null;
 		stopClock();
+		workerStop();
 		var s = ui.state;
 		var s1 = s.score[1], s2 = s.score[2];
 		var title, lead, prefix = '';

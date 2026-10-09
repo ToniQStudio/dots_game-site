@@ -55,11 +55,19 @@
 		? function () { return performance.now(); }
 		: function () { return Date.now(); };
 
-	function key(x, y) { return x + ',' + y; }
+	/*
+	 * Node keys. Coordinates are packed into a single integer so that the Maps
+	 * and Sets the engine is built on use numeric keys: no string building and
+	 * no parsing in the hot paths. The offset allows negative coordinates on the
+	 * endless board; coordinates stay far inside the supported range in practice.
+	 */
+	var KEY_OFF = 1 << 20;
+	var KEY_MUL = 1 << 21;
 
+	function key(x, y) { return (x + KEY_OFF) * KEY_MUL + (y + KEY_OFF); }
 	function parseKey(k) {
-		var i = k.indexOf(',');
-		return [+k.slice(0, i), +k.slice(i + 1)];
+		var t = k % KEY_MUL;
+		return [(k - t) / KEY_MUL - KEY_OFF, t - KEY_OFF];
 	}
 
 	function other(player) { return player === P1 ? P2 : P1; }
@@ -467,6 +475,8 @@
 		tight: 6.0,    /* count of cramped enemy groups */
 		tightOwn: 1.0, /* count of cramped own groups */
 		atari: 20,     /* enemy groups one move from capture */
+		near: 6,       /* enemy groups two escapes from capture */
+		gground: 4,    /* fully grounded enemy groups (hard to attack) */
 		danger: 3      /* a group with fewer escapes than this is cramped */
 	};
 
@@ -482,10 +492,13 @@
 		var bounds = state.bounds;
 		var visited = new Set();
 		var mark = new Map();
+		var mark4 = new Map();
 		var gid = 0;
-		var m = { size: 0, groups: 0, conn: 0, boundary: 0, contact: 0, grounded: 0, vuln: 0, big: 0, tight: 0, atari: 0 };
-		var o = { size: 0, groups: 0, conn: 0, boundary: 0, contact: 0, grounded: 0, vuln: 0, big: 0, tight: 0, atari: 0 };
-		var out = { 1: m, 2: o };
+		function blank() {
+			return { size: 0, groups: 0, conn: 0, boundary: 0, contact: 0,
+				grounded: 0, gground: 0, vuln: 0, big: 0, tight: 0, atari: 0, near: 0 };
+		}
+		var out = { 1: blank(), 2: blank() };
 
 		state.dots.forEach(function (v, k0) {
 			if ((v !== P1 && v !== P2) || visited.has(k0)) return;
@@ -494,7 +507,7 @@
 			var stack = [k0];
 			visited.add(k0);
 			gid++;
-			var gsize = 0, gbound = 0, gcontact = 0, gground = false;
+			var gsize = 0, gbound = 0, gorth = 0, gcontact = 0, gground = false;
 			while (stack.length) {
 				var ck = stack.pop();
 				var p = parseKey(ck);
@@ -510,7 +523,11 @@
 							R.conn++;
 							if (!visited.has(nk)) { visited.add(nk); stack.push(nk); }
 						} else if (t === undefined) {
-							if (!state.claimed.has(nk) && mark.get(nk) !== gid) { mark.set(nk, gid); gbound++; }
+							if (!state.claimed.has(nk)) {
+								if (mark.get(nk) !== gid) { mark.set(nk, gid); gbound++; }
+								/* orthogonal escapes are the ones a capture has to seal */
+								if ((dx === 0 || dy === 0) && mark4.get(nk) !== gid) { mark4.set(nk, gid); gorth++; }
+							}
 						} else if (t === foe) {
 							gcontact++;
 						}
@@ -521,11 +538,14 @@
 			R.contact += gcontact;
 			R.size += gsize;
 			R.groups++;
-			if (gground) R.grounded += gsize;
-			else if (gbound < W.danger) {
+			if (gground) { R.grounded += gsize; R.gground++; }
+			if (gbound < W.danger) {
 				R.tight++;
 				R.vuln += gsize * (W.danger - gbound);
-				if (gbound <= 1) R.atari++;
+			}
+			if (!gground) {
+				if (gorth <= 1) R.atari++;
+				else if (gorth === 2) R.near++;
 			}
 			if (gsize > R.big) R.big = gsize;
 		});
@@ -539,11 +559,13 @@
 		val += (m.conn - o.conn) * W.conn;
 		val += (m.boundary - o.boundary) * W.free;
 		val += (m.grounded - o.grounded) * W.edge;
+		val += (m.gground - o.gground) * W.gground;
 		val += (m.contact - o.contact) * W.press;
 		val += o.vuln * W.vuln - m.vuln * W.vulnOwn;
 		val += (m.big - o.big) * W.big;
 		val += o.tight * W.tight - m.tight * W.tightOwn;
 		val += (o.atari - m.atari) * W.atari;
+		val += (o.near - m.near) * W.near;
 		return val;
 	}
 
@@ -677,10 +699,10 @@
 			var caps = captureMoves(state, ctx.captureFree, ctx.captureScan);
 			if (caps.length) {
 				var seen = Object.create(null);
-				for (i = 0; i < caps.length; i++) seen[caps[i].x + ',' + caps[i].y] = 1;
+				for (i = 0; i < caps.length; i++) seen[key(caps[i].x, caps[i].y)] = 1;
 				var rest = [];
 				for (i = 0; i < arr.length; i++) {
-					if (!seen[arr[i].x + ',' + arr[i].y]) rest.push(arr[i]);
+					if (!seen[key(arr[i].x, arr[i].y)]) rest.push(arr[i]);
 				}
 				var out = caps.concat(rest);
 				if (out.length > limit) out.length = limit;
@@ -885,7 +907,7 @@
 			captureFree: options.captureFree === undefined ? 6 : options.captureFree,
 			qMax: options.qMax === undefined ? 5 : options.qMax,
 			qLimit: options.qLimit || 20,
-			tt: options.tt === false ? null : new Map(),
+			tt: options.tt === false ? null : (options.tt instanceof Map ? options.tt : new Map()),
 			ttMax: options.ttMax || 200000,
 			pvs: options.pvs !== false,
 			lmr: options.lmr !== false,
@@ -1286,9 +1308,9 @@
 			ranked = moves.map(function (m, idx) { return { x: m.x, y: m.y, score: scores[idx] }; });
 			ranked.sort(function (a, b) { return b.score - a.score; });
 			var order = Object.create(null);
-			ranked.forEach(function (r, idx) { order[r.x + ',' + r.y] = idx; });
+			ranked.forEach(function (r, idx) { order[key(r.x, r.y)] = idx; });
 			moves.sort(function (a, b) {
-				return (order[a.x + ',' + a.y] || 0) - (order[b.x + ',' + b.y] || 0);
+				return (order[key(a.x, a.y)] || 0) - (order[key(b.x, b.y)] || 0);
 			});
 		}
 
